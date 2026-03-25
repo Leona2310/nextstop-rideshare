@@ -1,181 +1,160 @@
-import { useEffect, useRef, useState } from 'react';
-import { Alert, StyleSheet, View, Text } from 'react-native';
-import MapView, { Marker, UrlTile, Polyline } from 'react-native-maps';
-import { subscribeToActiveDrivers } from '../app/firebase/driverLocationService';
-import { getCurrentLocation } from '../app/services/locationService';
-import { provider, MAPTILER_KEY, THUNDERFOREST_KEY } from '../app/config/mapConfig';
+import { useEffect, useMemo, useRef } from 'react';
+import { StyleSheet, View } from 'react-native';
+import { WebView } from 'react-native-webview';
 
-const MapComponent = ({ showUserLocation = true, onDriverSelect = null, selectedDriverId = null, routeCoordinates = [], selectedDriverLive = null, followDriver = false }) => {
-  const [drivers, setDrivers] = useState([]);
-  const [userLocation, setUserLocation] = useState(null);
-  const [region, setRegion] = useState({
-    latitude: 28.6139, // Default to Delhi, India - replace with campus coordinates
-    longitude: 77.2090,
-    latitudeDelta: 0.01,
-    longitudeDelta: 0.01,
-  });
-  const mapRef = useRef(null);
+// Fixed pickup location: Sophia College (Mumbai) — fallback center when userLocation is null
+const SOPHIA_COLLEGE_COORDS = { latitude: 19.0217, longitude: 72.8309 };
 
-  // When followDriver is enabled, center the map on selectedDriverLive updates
-  useEffect(() => {
-    if (followDriver && selectedDriverLive && mapRef.current && selectedDriverLive.latitude && selectedDriverLive.longitude) {
-      try {
-        mapRef.current.animateToRegion({
-          latitude: selectedDriverLive.latitude,
-          longitude: selectedDriverLive.longitude,
-          latitudeDelta: 0.005,
-          longitudeDelta: 0.005,
-        }, 500);
-      } catch (e) {
-        // some platforms might use animateCamera instead
-        try { mapRef.current.animateCamera({ center: { latitude: selectedDriverLive.latitude, longitude: selectedDriverLive.longitude }, zoom: 16 }, { duration: 500 }); } catch (err) {}
-      }
-    }
-  }, [followDriver, selectedDriverLive]);
+/**
+ * MapComponent
+ * Props:
+ *  - userLocation: { latitude, longitude } | null
+ *  - drivers: Array<{ id, latitude, longitude }>
+ *  - selectedDriverId: string|null
+ *
+ * Uses a WebView rendering a Leaflet map (OpenStreetMap tiles), and updates markers
+ * via postMessage. Always safe when location is null.
+ */
+export default function MapComponent({ userLocation = null, drivers = [], selectedDriverId = null }) {
+  const webRef = useRef(null);
 
-  useEffect(() => {
-    // Subscribe to active drivers
-    const unsubscribe = subscribeToActiveDrivers((activeDrivers) => {
-      setDrivers(activeDrivers);
-    });
+  const initialData = useMemo(() => ({
+    userLocation,
+    drivers,
+    selectedDriverId,
+    pickup: SOPHIA_COLLEGE_COORDS,
+  }), []);
 
-    // Get user location if needed
-    if (showUserLocation) {
-      getCurrentLocation().then((location) => {
-        if (location) {
-          setUserLocation(location);
-          // Optionally center map on user location
-          setRegion({
-            latitude: location.latitude,
-            longitude: location.longitude,
-            latitudeDelta: 0.01,
-            longitudeDelta: 0.01,
-          });
+  // HTML string with Leaflet map. It listens for messages from React Native to update markers.
+  const html = useMemo(() => {
+    const initial = JSON.stringify(initialData);
+    return `<!doctype html>
+<html>
+  <head>
+    <meta name="viewport" content="initial-scale=1.0, maximum-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+      html,body,#map{ height:100%; margin:0; padding:0 }
+      .leaflet-container { background: #fff; }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+      (function(){
+        const data = ${initial};
+        // Create map centered on userLocation or pickup fallback
+        const center = (data.userLocation && data.userLocation.latitude && data.userLocation.longitude) ? [data.userLocation.latitude, data.userLocation.longitude] : [data.pickup.latitude, data.pickup.longitude];
+        const map = L.map('map', { zoomControl: true }).setView(center, 15);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Layer for markers
+        let markersLayer = L.layerGroup().addTo(map);
+
+        function addMarkers(payload) {
+          // clear
+          markersLayer.clearLayers();
+
+          // pickup marker (Sophia College)
+          try {
+            const p = payload.pickup;
+            if (p && typeof p.latitude === 'number' && typeof p.longitude === 'number') {
+              const pickup = L.circleMarker([p.latitude, p.longitude], { color: '#0000FF', radius: 8, weight: 2 }).bindPopup('Pickup: Sophia College');
+              markersLayer.addLayer(pickup);
+            }
+          } catch (e) { console.warn('pickup marker error', e); }
+
+          // user marker (blue)
+          try {
+            const u = payload.userLocation;
+            if (u && typeof u.latitude === 'number' && typeof u.longitude === 'number') {
+              const um = L.circleMarker([u.latitude, u.longitude], { color: '#0000FF', radius: 8, weight: 2 }).bindPopup('You are here');
+              markersLayer.addLayer(um);
+            }
+          } catch (e) { console.warn('user marker error', e); }
+
+          // drivers (green) and selected driver (red)
+          try {
+            const drivers = Array.isArray(payload.drivers) ? payload.drivers : [];
+            drivers.forEach(d => {
+              if (d && typeof d.latitude === 'number' && typeof d.longitude === 'number') {
+                const isSelected = d.id == payload.selectedDriverId;
+                const color = isSelected ? '#FF0000' : '#22AA22';
+                const marker = L.circleMarker([d.latitude, d.longitude], { color, radius: isSelected ? 9 : 6, weight: 2 });
+                marker.on('click', function(){
+                  try { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'driver_click', id: d.id })); } catch (e) {}
+                });
+                markersLayer.addLayer(marker);
+              }
+            });
+          } catch (e) { console.warn('drivers marker error', e); }
         }
-      });
-    }
 
-    return unsubscribe;
-  }, [showUserLocation]);
+        // Initial markers
+        addMarkers(data);
 
-  const handleDriverPress = (driver) => {
-    if (onDriverSelect) {
-      onDriverSelect(driver);
-    } else {
-      Alert.alert(
-        'Driver Info',
-        `Driver ID: ${driver.driverId}\nSpeed: ${driver.speed} km/h\nAvailable: ${driver.isAvailable ? 'Yes' : 'No'}`
-      );
-    }
-  };
+        // Ensure map fits at least around pickup/user markers but don't force panic when null
+        try {
+          const group = markersLayer.getLayers();
+          if (group && group.length > 0) {
+            const g = L.featureGroup(group);
+            map.fitBounds(g.getBounds(), { maxZoom: 16, padding: [50,50] });
+          }
+        } catch (e) {}
 
-  const usingFallbackOSM = !(provider === 'maptiler' && MAPTILER_KEY && MAPTILER_KEY !== 'YOUR_MAPTILER_API_KEY') && !(provider === 'thunderforest' && THUNDERFOREST_KEY && THUNDERFOREST_KEY !== 'YOUR_THUNDERFOREST_API_KEY');
+        // Message handler for updates from React Native
+        function onMessage(event) {
+          try {
+            const payload = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+            if (!payload) return;
+            if (payload.type === 'update') {
+              addMarkers(payload);
+            }
+          } catch (err) {
+            console.warn('map onMessage parse error', err);
+          }
+        }
 
+        // Support multiple platforms for message events
+        document.addEventListener('message', onMessage);
+        window.addEventListener('message', onMessage);
+
+        // expose a safe ping
+        window.mapReady = true;
+      })();
+    </script>
+  </body>
+</html>`;
+  }, [initialData]);
+
+  // send updates when props change
   useEffect(() => {
-    if (usingFallbackOSM) {
-      console.warn('Using default OpenStreetMap tiles. For production, configure MapTiler or Thunderforest in app/config/mapConfig.js');
+    const payload = JSON.stringify({ type: 'update', userLocation, drivers, selectedDriverId, pickup: SOPHIA_COLLEGE_COORDS });
+    if (webRef.current && webRef.current.postMessage) {
+      try { webRef.current.postMessage(payload); } catch (e) { /* ignore */ }
     }
-  }, [usingFallbackOSM]);
+  }, [userLocation, drivers, selectedDriverId]);
 
   return (
     <View style={styles.container}>
-      <MapView
-        ref={mapRef}
-        style={styles.map}
-        region={region}
-        showsUserLocation={showUserLocation}
-        showsMyLocationButton={true}
-        zoomEnabled={true}
-        scrollEnabled={true}
-      >
-          {/* Tile layer (provider configured) */}
-          {provider === 'maptiler' && MAPTILER_KEY && MAPTILER_KEY !== 'YOUR_MAPTILER_API_KEY' ? (
-            <UrlTile urlTemplate={`https://api.maptiler.com/tiles/streets/{z}/{x}/{y}.png?key=${MAPTILER_KEY}`} maximumZ={20} flipY={false} />
-          ) : provider === 'thunderforest' && THUNDERFOREST_KEY && THUNDERFOREST_KEY !== 'YOUR_THUNDERFOREST_API_KEY' ? (
-            <UrlTile urlTemplate={`https://tile.thunderforest.com/transport/{z}/{x}/{y}.png?apikey=${THUNDERFOREST_KEY}`} maximumZ={20} flipY={false} />
-          ) : (
-            // Fallback: default OpenStreetMap tile server (not for production)
-            <UrlTile urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png" maximumZ={19} flipY={false} />
-          )}
-
-        {/* Driver markers */}
-        {drivers.map((driver) => {
-          const isSelected = selectedDriverId === driver.driverId;
-          // If we have selectedDriverLive prop, show that instead for the selected driver to make marker smooth/real-time
-          const coord = isSelected && selectedDriverLive ? { latitude: selectedDriverLive.latitude, longitude: selectedDriverLive.longitude } : { latitude: driver.latitude, longitude: driver.longitude };
-          const rotation = isSelected && (selectedDriverLive?.heading || driver.heading) ? (selectedDriverLive?.heading || driver.heading) : 0;
-          return (
-            <Marker
-                key={driver.id}
-                coordinate={coord}
-                title={`Driver ${driver.driverId}`}
-                description={`Speed: ${Math.round(driver.speed || 0)} km/h`}
-                onPress={() => handleDriverPress(driver)}
-                anchor={{ x: 0.5, y: 0.5 }}
-                rotation={rotation}
-              >
-                {isSelected ? (
-                  // custom rotating car marker for selected driver
-                  <View style={{ transform: [{ rotate: `${rotation}deg` }], alignItems: 'center', justifyContent: 'center' }}>
-                    <Text style={{ fontSize: 28 }}>🚗</Text>
-                  </View>
-                ) : (
-                  <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: (driver.isAvailable ? 'green' : 'red') }} />
-                )}
-              </Marker>
-          );
-        })}
-
-        {/* Route polyline if provided */}
-  {Array.isArray(routeCoordinates) && routeCoordinates.length > 0 && (
-          <Polyline
-            coordinates={routeCoordinates}
-            strokeColor="#276EF1"
-            strokeWidth={4}
-          />
-        )}
-      </MapView>
-      {/* If we're using the OSM fallback, show a clear on-screen notice so the user knows tiles may be blocked */}
-      {usingFallbackOSM && (
-        <View style={styles.fallbackNotice} pointerEvents="none">
-          <View style={styles.fallbackInner}>
-            <Text style={styles.fallbackTitle}>Map tiles limited</Text>
-            <Text style={styles.fallbackText}>You're using the default OpenStreetMap tile server. This server is intended for light use and may show 'Access blocked' overlays in apps. Configure a tile provider (MapTiler/Thunderforest) and add an API key in app/config/mapConfig.js to remove this warning.</Text>
-          </View>
-        </View>
-      )}
+      <WebView
+        ref={webRef}
+        originWhitelist={["*"]}
+        source={{ html }}
+        style={styles.web}
+        javaScriptEnabled={true}
+        domStorageEnabled={true}
+        startInLoadingState={true}
+      />
     </View>
   );
-};
+}
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  map: {
-    flex: 1,
-  },
-  fallbackNotice: {
-    position: 'absolute',
-    top: 12,
-    left: 12,
-    right: 12,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    borderRadius: 8,
-    padding: 10,
-  },
-  fallbackInner: {
-    flexDirection: 'column',
-  },
-  fallbackTitle: {
-    color: '#fff',
-    fontWeight: 'bold',
-    marginBottom: 4,
-  },
-  fallbackText: {
-    color: '#fff',
-    fontSize: 12,
-  },
+  container: { flex: 1 },
+  web: { flex: 1, backgroundColor: 'transparent' },
 });
-
-export default MapComponent;

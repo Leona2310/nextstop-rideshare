@@ -1,31 +1,31 @@
-import React, { useState, useEffect, useRef } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Location from 'expo-location';
+import { collection, query, where } from 'firebase/firestore';
+import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
+  Dimensions,
+  Linking,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View,
-  ScrollView,
-  Dimensions
+  View
 } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
-import { logoutUser, getFriendlyAuthError } from '../../firebase/authService';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { requestLocationPermission, getCurrentLocation, calculateDistance, reverseGeocodeToAddress, getRoadDistanceKm, getPlacePredictions, getPlaceDetails, getFixedSophiaPickup } from '../../services/locationService';
-import * as Location from 'expo-location';
-import { VEHICLE_FARES, MINIMUM_FARE, calculateFare } from '../../config/fareConfig';
-import { createRideRequest, getActiveRideForUser } from '../../firebase/rideService';
-import { joinRide as clientJoinRide } from '../../firebase/rideClientService';
-import { getProfile } from '../../firebase/profileService';
-import { collection, query, where, orderBy } from 'firebase/firestore';
-import { db, safeOnSnapshot } from '../../firebase/firebaseConfig';
-import { auth } from '../../firebase/firebaseConfig';
+import MapComponent from '../../../components/MapComponent';
+import DriverCardBottomSheet from '../../components/DriverCardBottomSheet';
 import RideTypeSelector from '../../components/RideTypeSelector';
 import SearchingBottomSheet from '../../components/SearchingBottomSheet';
-import DriverCardBottomSheet from '../../components/DriverCardBottomSheet';
 import TopBar from '../../components/TopBar';
+import { calculateFare } from '../../config/fareConfig';
+import { getFriendlyAuthError, logoutUser } from '../../firebase/authService';
+import { auth, db, safeOnSnapshot } from '../../firebase/firebaseConfig';
+import { getProfile } from '../../firebase/profileService';
+import { joinRide as clientJoinRide } from '../../firebase/rideClientService';
+import { createRideRequest } from '../../firebase/rideService';
+import { getFixedSophiaPickup, getPlaceDetails, getPlacePredictions, getRoadDistanceKm } from '../../services/locationService';
 // ...existing imports (profile removed)
 
 const { width, height } = Dimensions.get('window');
@@ -39,6 +39,7 @@ const VEHICLE_TYPES = {
 export default function UserHome({ navigation }) {
   // profile fetching removed per request
   const [location, setLocation] = useState(null);
+  const [permissionDenied, setPermissionDenied] = useState(false);
   // Pickup is fixed to Sophia College — we fetch its address/coords on mount
   const [pickupLocation, setPickupLocation] = useState('Sophia College, Mumbai');
   const [dropLocation, setDropLocation] = useState('');
@@ -78,7 +79,7 @@ export default function UserHome({ navigation }) {
       try {
         const p = await getProfile();
         setUserProfile(p);
-      } catch (e) { console.warn('failed to load profile', e); }
+      } catch (_e) { console.warn('failed to load profile', _e); }
     })();
   }, []);
 
@@ -110,8 +111,8 @@ export default function UserHome({ navigation }) {
         items.sort((a, b) => a.expiresAt - b.expiresAt);
         setOpenRides(items);
       });
-    } catch (e) {
-      console.warn('subscribe open rides failed', e);
+    } catch (_e) {
+      console.warn('subscribe open rides failed', _e);
     }
     return () => { if (typeof unsub === 'function') unsub(); };
   }, []);
@@ -126,7 +127,7 @@ export default function UserHome({ navigation }) {
           if (parsed && parsed.name && parsed.name !== 'UserHome') {
             // Delay a tick so navigation stack is ready
             setTimeout(() => {
-              try { navigation.navigate(parsed.name, parsed.params || {}); } catch (e) { /* ignore */ }
+              try { navigation.navigate(parsed.name, parsed.params || {}); } catch (_e) { /* ignore */ }
             }, 300);
           }
         }
@@ -135,16 +136,26 @@ export default function UserHome({ navigation }) {
   }, []);
 
   const initializeLocation = async () => {
-    const hasPermission = await requestLocationPermission();
-    if (hasPermission) {
-      const currentLoc = await getCurrentLocation();
-      if (currentLoc) {
-        setLocation(currentLoc);
-  // We intentionally DO NOT set pickupLocation/pickupCoords here.
-  // Pickup is fixed to Sophia College — keep pickupLocation/pickupCoords as the fixed value.
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        console.warn('UserHome: location permission denied');
+        setPermissionDenied(true);
+        Alert.alert('Location Permission', 'Location permission was denied. Map features will be limited.');
+        return;
       }
-    } else {
-      Alert.alert('Location Permission', 'Location permission is required for ride booking');
+
+      // Try to get current position safely
+      try {
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+        if (loc && loc.coords) {
+          setLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude, speed: loc.coords.speed || 0, heading: loc.coords.heading || 0 });
+        }
+      } catch (_err) {
+        console.error('UserHome: getCurrentPositionAsync failed', _err);
+      }
+    } catch (_err) {
+      console.error('UserHome: initializeLocation failed', _err);
     }
   };
 
@@ -189,8 +200,8 @@ export default function UserHome({ navigation }) {
       const preds = await getPlacePredictions(text);
       if (forField === 'pickup') setPickupSuggestions(preds);
       else setDropSuggestions(preds);
-    } catch (err) {
-      console.warn('place predictions failed, falling back to geocode', err);
+    } catch (_err) {
+      console.warn('place predictions failed, falling back to geocode', _err);
       try {
         const results = await Location.geocodeAsync(text);
         const formatted = results.map(r => {
@@ -210,8 +221,8 @@ export default function UserHome({ navigation }) {
         });
         if (forField === 'pickup') setPickupSuggestions(formatted);
         else setDropSuggestions(formatted);
-      } catch (e) {
-        console.warn('geocode fallback failed', e);
+      } catch (_e) {
+        console.warn('geocode fallback failed', _e);
         if (forField === 'pickup') setPickupSuggestions([]);
         else setDropSuggestions([]);
       }
@@ -237,8 +248,8 @@ export default function UserHome({ navigation }) {
           setPickupLocation(s.address);
           setPickupCoords({ latitude: s.latitude, longitude: s.longitude });
         }
-      } catch (err) {
-        console.warn('Could not fetch Sophia pickup', err);
+      } catch (_err) {
+        console.warn('Could not fetch Sophia pickup', _err);
       }
     }
 
@@ -260,12 +271,12 @@ export default function UserHome({ navigation }) {
                 const r = results[0];
                 setDropCoords({ latitude: r.latitude, longitude: r.longitude });
               }
-            } catch (e) {
-              console.warn('Geocode fallback failed', e);
+            } catch (_e) {
+              console.warn('Geocode fallback failed', _e);
             }
           }
-        } catch (err) {
-          console.warn('Resolving dropLocation failed', err);
+        } catch (_err) {
+          console.warn('Resolving dropLocation failed', _err);
         }
       }
     }
@@ -310,7 +321,7 @@ export default function UserHome({ navigation }) {
   setRideId(rideId);
   setSearching(true);
   Alert.alert('Booking Confirmed', `Your ride has been booked!\nRide ID: ${rideId}\nEstimated price: ₹${estimatedPrice}`);
-  try { await AsyncStorage.setItem('lastRoute', JSON.stringify({ name: 'RideTracking', params: { rideId } })); } catch (e) {}
+  try { await AsyncStorage.setItem('lastRoute', JSON.stringify({ name: 'RideTracking', params: { rideId } })); } catch (_e) {}
   navigation.navigate('RideTracking', { rideId });
     } catch (error) {
       console.error('create ride failed:', error);
@@ -336,9 +347,9 @@ export default function UserHome({ navigation }) {
       Alert.alert('Joined', 'You have joined the ride.');
       // Optionally navigate to RideTracking
       navigation.navigate('RideTracking', { rideId });
-    } catch (err) {
-      console.error('join failed', err);
-      Alert.alert('Join Failed', err.message || 'Could not join ride');
+    } catch (_err) {
+      console.error('join failed', _err);
+      Alert.alert('Join Failed', _err.message || 'Could not join ride');
     }
   };
 
@@ -346,8 +357,8 @@ export default function UserHome({ navigation }) {
     try {
       await logoutUser();
       // Navigation will be handled by onAuthStateChanged in app/index.js
-    } catch (e) {
-      Alert.alert('Logout failed', getFriendlyAuthError(e));
+    } catch (_e) {
+      Alert.alert('Logout failed', getFriendlyAuthError(_e));
     }
   };
 
@@ -356,31 +367,19 @@ export default function UserHome({ navigation }) {
   <TopBar navigation={navigation} showLogout={true} />
       {/* Map View */}
       <View style={styles.mapContainer}>
-        {location ? (
-          <MapView
-            style={styles.map}
-            initialRegion={{
-              latitude: location.latitude,
-              longitude: location.longitude,
-              latitudeDelta: 0.01,
-              longitudeDelta: 0.01,
-            }}
-          >
-            <Marker
-              coordinate={{
-                latitude: location.latitude,
-                longitude: location.longitude,
-              }}
-              title="Your Location"
-            />
-            {/* Sophia pickup chip */}
-            {pickupCoords && (
-              <Marker coordinate={{ latitude: pickupCoords.latitude, longitude: pickupCoords.longitude }} title="Sophia College" pinColor="blue" />
-            )}
-          </MapView>
-        ) : (
-          <View style={styles.mapPlaceholder}>
-            <Text>Loading map...</Text>
+        <MapComponent
+          userLocation={location || null}
+          drivers={[]}
+          selectedDriverId={null}
+        />
+        {permissionDenied && (
+          <View style={styles.permissionNotice} pointerEvents="box-none">
+            <View style={styles.permissionInner}>
+              <Text style={styles.permissionText}>Location permission was denied. Open settings to enable map features.</Text>
+              <TouchableOpacity style={styles.permissionBtn} onPress={() => { try { Linking.openSettings(); } catch (_e) { console.warn('openSettings failed', _e); } }}>
+                <Text style={styles.permissionBtnText}>Open Settings</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
       </View>
@@ -562,11 +561,34 @@ const styles = StyleSheet.create({
   map: {
     ...StyleSheet.absoluteFillObject,
   },
-  mapPlaceholder: {
-    flex: 1,
-    justifyContent: 'center',
+  // mapPlaceholder styles removed; MapComponent handles its own layout
+  permissionNotice: {
+    position: 'absolute',
+    bottom: 12,
+    left: 12,
+    right: 12,
     alignItems: 'center',
-    backgroundColor: '#e0e0e0',
+  },
+  permissionInner: {
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    padding: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  permissionText: {
+    color: '#fff',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  permissionBtn: {
+    backgroundColor: '#276EF1',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
+  permissionBtnText: {
+    color: '#fff',
+    fontWeight: '700',
   },
   bookingPanel: {
     flex: 1,

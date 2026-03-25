@@ -1,13 +1,11 @@
-import { useEffect, useState, useRef } from 'react';
-import { Alert, SafeAreaView, StyleSheet, Text, TouchableOpacity, View, TextInput } from 'react-native';
-import { subscribeToDriverLocation } from '../../firebase/driverLocationService';
-import { calculateDistance, calculateETA, formatETA } from '../../services/locationService';
-import { doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db, safeOnSnapshot } from '../../firebase/firebaseConfig';
-import MapComponent from '../../../components/MapComponent';
-import { logoutUser } from '../../firebase/authService';
-import TopBar from '../../components/TopBar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { useEffect, useRef, useState } from 'react';
+import { Alert, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import MapComponent from '../../../components/MapComponent';
+import TopBar from '../../components/TopBar';
+import { db, safeOnSnapshot } from '../../firebase/firebaseConfig';
+import { formatETA } from '../../services/locationService';
 
 export default function RideTrackingScreen({ navigation, route }) {
   const { rideId } = route.params || {};
@@ -140,15 +138,9 @@ export default function RideTrackingScreen({ navigation, route }) {
       {/* Map View */}
       <View style={styles.mapContainer}>
         <MapComponent
-          showUserLocation={true}
-          selectedDriverId={ride?.driverId}
-          selectedDriverLive={driverLive}
-          followDriver={!!ride?.driverId && (ride.status === 'accepted' || ride.status === 'in_progress')}
-          routeCoordinates={
-            // If searching (no driver yet), show the precomputed Sophia->destination route (routeToDrop).
-            // After acceptance, show the driver's route (driverRoute) which may be dynamic.
-            (!ride || ride.status === 'searching') ? (ride?.routeToDrop?.coordinates || []) : (ride?.driverRoute || [])
-          }
+          userLocation={driverLive || (ride?.pickupLocation ? { latitude: ride.pickupLocation.latitude, longitude: ride.pickupLocation.longitude } : null)}
+          drivers={driverLive ? [{ id: ride?.driverId || 'driver', latitude: driverLive.latitude, longitude: driverLive.longitude }] : []}
+          selectedDriverId={ride?.driverId || null}
         />
       </View>
 

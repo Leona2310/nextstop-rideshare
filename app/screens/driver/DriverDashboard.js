@@ -1,18 +1,16 @@
-import React, { useEffect, useState, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import MapComponent from '../../../components/MapComponent';
-import IncomingRequestBottomSheet from '../../components/IncomingRequestBottomSheet';
 import ActiveTripBottomSheet from '../../components/ActiveTripBottomSheet';
+import IncomingRequestBottomSheet from '../../components/IncomingRequestBottomSheet';
 import TopBar from '../../components/TopBar';
 // driver profile fetching removed per request
-import { getRouteBetweenCoords, reverseGeocodeToAddress } from '../../services/locationService';
-import { auth } from '../../firebase/firebaseConfig';
-import { waitForAuthReady, updateDriverLocation } from '../../firebase/driverLocationService';
+import { collection, doc, getDoc, query, updateDoc, where } from 'firebase/firestore';
+import { updateDriverLocation, waitForAuthReady } from '../../firebase/driverLocationService';
+import { auth, db, safeOnSnapshot } from '../../firebase/firebaseConfig';
 import { acceptOffer } from '../../firebase/offerManager';
-import { verifyPickupOTP } from '../../firebase/rideService';
-import { doc, collection, query, where, updateDoc, getDoc } from 'firebase/firestore';
-import { completeRide } from '../../firebase/rideService';
-import { db, safeOnSnapshot } from '../../firebase/firebaseConfig';
+import { completeRide, verifyPickupOTP } from '../../firebase/rideService';
+import { getRouteBetweenCoords, reverseGeocodeToAddress } from '../../services/locationService';
 
 export default function DriverDashboard({ navigation }) {
   const [isOnline, setIsOnline] = useState(false);
@@ -55,7 +53,7 @@ export default function DriverDashboard({ navigation }) {
           } : {};
           let dropAddr = o.dropLocation?.name || o.dropLocation?.address || o.dropAddress || '';
 
-          try {
+                try {
             const rideRef = doc(db, 'rides', o.rideId);
             const rideSnap = await getDoc(rideRef);
             if (rideSnap.exists()) {
@@ -71,31 +69,31 @@ export default function DriverDashboard({ navigation }) {
                 try {
                   const activeRef = doc(db, 'activeDrivers', user.uid);
                   const activeSnap = await getDoc(activeRef);
-                  if (activeSnap.exists()) {
-                    const loc = activeSnap.data().location;
-                    if (loc) {
-                      const route = await getRouteBetweenCoords({ latitude: loc.latitude, longitude: loc.longitude }, { latitude: ride.pickupLocation.latitude, longitude: ride.pickupLocation.longitude });
-                      estInfoFromOffer = { distanceKm: route.distanceKm, durationMin: route.durationMin, fare: ride.estimatedPrice || o.estimatedPrice || null };
-                    }
-                  }
-                } catch (e) {
-                  console.warn('precheck route failed', e);
+          if (activeSnap.exists()) {
+            const loc = activeSnap.data().location;
+            if (loc) {
+              const route = await getRouteBetweenCoords({ latitude: loc.latitude, longitude: loc.longitude }, { latitude: ride.pickupLocation.latitude, longitude: ride.pickupLocation.longitude });
+              estInfoFromOffer = { distanceKm: route.distanceKm, durationMin: route.durationMin, fare: ride.estimatedPrice || o.estimatedPrice || null };
+            }
+          }
+                } catch (_e) {
+                  console.warn('precheck route failed', _e);
                 }
               }
             }
-          } catch (e) {
-            console.warn('precheck offer failed', e);
+          } catch (_e) {
+            console.warn('precheck offer failed', _e);
           }
 
           // If we still don't have a human-friendly drop text, try reverse-geocoding coordinates
           try {
             const candidate = o.dropLocation || o.destination || null;
-            if (!dropAddr && candidate && typeof candidate.latitude === 'number' && typeof candidate.longitude === 'number') {
+                if (!dropAddr && candidate && typeof candidate.latitude === 'number' && typeof candidate.longitude === 'number') {
               const addr = await reverseGeocodeToAddress(candidate.latitude, candidate.longitude);
               if (addr) dropAddr = addr;
             }
-          } catch (e) {
-            console.warn('reverse geocode fallback failed', e);
+          } catch (_e) {
+            console.warn('reverse geocode fallback failed', _e);
           }
 
           // prefer ride's dropLocation/destination object for richer display
@@ -107,16 +105,16 @@ export default function DriverDashboard({ navigation }) {
               const ride = rideSnap.data();
               normalizedDropLocation = normalizedDropLocation || ride.dropLocation || ride.destination || null;
             }
-          } catch (e) {
+          } catch (_e) {
             /* ignore */
           }
 
           setIncomingOffer({ ...o, estInfo: estInfoFromOffer, dropAddress: dropAddr, dropLocation: normalizedDropLocation });
         }
       }, (err) => console.warn('offers snapshot error', err));
-    })();
+  })();
 
-    return () => { try { offersUnsub && offersUnsub(); } catch (e) {} };
+  return () => { try { offersUnsub && offersUnsub(); } catch (_e) {} };
   }, [isOnline]);
 
   // subscribe to active ride updates to show ActiveTripBottomSheet
@@ -160,10 +158,10 @@ export default function DriverDashboard({ navigation }) {
         }, (err) => {
           console.warn('activeDrivers snapshot error (driver dashboard)', err);
         });
-      } catch (e) { console.warn('live driver sub failed', e); }
+  } catch (_e) { console.warn('live driver sub failed', _e); }
     })();
 
-    return () => { try { unsub(); } catch (e) {}; try { liveUnsub && liveUnsub(); } catch (e) {} };
+  return () => { try { unsub(); } catch (_e) {}; try { liveUnsub && liveUnsub(); } catch (_e) {} };
   }, [activeRideId]);
 
   // Simple location watcher using interval (replace with watchLocation in prod)
@@ -188,8 +186,8 @@ export default function DriverDashboard({ navigation }) {
             currentLocationRef.current = loc;
             await updateDriverLocation(loc, activeRideId, !activeRideId);
           }
-        } catch (e) {
-          console.warn('location poll failed', e);
+        } catch (_e) {
+          console.warn('location poll failed', _e);
         }
       }, 5000);
     }
@@ -213,8 +211,8 @@ export default function DriverDashboard({ navigation }) {
         currentLocationRef.current = loc;
         await updateDriverLocation(loc, activeRideId, true);
       }
-    } catch (e) {
-      console.warn('goOnline failed', e);
+    } catch (_e) {
+      console.warn('goOnline failed', _e);
     }
   };
 
@@ -225,8 +223,8 @@ export default function DriverDashboard({ navigation }) {
       await goOffline();
   // clear any incoming offers when we go offline
   setIncomingOffer(null);
-    } catch (e) {
-      console.warn('goOffline failed', e);
+    } catch (_e) {
+      console.warn('goOffline failed', _e);
     }
   };
 
@@ -243,12 +241,11 @@ export default function DriverDashboard({ navigation }) {
         const ride = rideSnap.data();
         dropFromRide = ride.dropLocation?.name || ride.dropLocation?.address || ride.destination?.name || null;
       }
-    } catch (e) {
-      console.warn('Could not read ride for confirm dialog', e);
+    } catch (_e) {
+      console.warn('Could not read ride for confirm dialog', _e);
     }
 
-  const formatCoords = (d) => (d && typeof d.latitude === 'number' && typeof d.longitude === 'number') ? `${d.latitude.toFixed(5)}, ${d.longitude.toFixed(5)}` : null;
-  const drop = incomingOffer.dropAddress || incomingOffer.dropLocation?.name || formatCoords(incomingOffer.dropLocation) || dropFromRide || 'unknown drop';
+  const drop = incomingOffer.dropAddress || incomingOffer.dropLocation?.name || (incomingOffer.dropLocation && typeof incomingOffer.dropLocation.latitude === 'number' && typeof incomingOffer.dropLocation.longitude === 'number' ? `${incomingOffer.dropLocation.latitude.toFixed(4)}, ${incomingOffer.dropLocation.longitude.toFixed(4)}` : null) || dropFromRide || 'unknown drop';
     const fare = incomingOffer.estimatedPrice != null ? ` • ₹${incomingOffer.estimatedPrice}` : '';
     Alert.alert(
       'Confirm Accept',
@@ -274,11 +271,11 @@ export default function DriverDashboard({ navigation }) {
                   // mark driver as busy (isAvailable=false) and attach currentRideId so backend computes route
                   await updateDriverLocation(loc, incomingOffer.rideId, false);
                 }
-              } catch (e) {
-                console.warn('post-accept immediate location update failed', e);
+              } catch (_e) {
+                console.warn('post-accept immediate location update failed', _e);
               }
-            } catch (e) {
-              Alert.alert('Failed to accept', e.message || 'Could not accept offer');
+            } catch (_e) {
+              Alert.alert('Failed to accept', _e.message || 'Could not accept offer');
             }
           }
         }
@@ -292,8 +289,8 @@ export default function DriverDashboard({ navigation }) {
     try {
       await verifyPickupOTP(activeRideId, String(otp).trim());
       Alert.alert('Trip started', 'OTP verified and trip started');
-    } catch (e) {
-      Alert.alert('OTP failed', e.message || 'Invalid OTP');
+    } catch (_e) {
+      Alert.alert('OTP failed', _e.message || 'Invalid OTP');
     }
   };
 
@@ -306,8 +303,8 @@ export default function DriverDashboard({ navigation }) {
           const { getCurrentLocation } = await import('../../services/locationService');
           const loc = await getCurrentLocation();
           if (loc) await updateDriverLocation(loc, null, true);
-        } catch (e) {
-          console.warn('post-complete location update failed', e);
+        } catch (_e) {
+          console.warn('post-complete location update failed', _e);
         }
         Alert.alert('Completed', 'Trip marked completed');
         setActiveRideId(null);
@@ -315,9 +312,9 @@ export default function DriverDashboard({ navigation }) {
         setRouteCoords([]);
         setActiveRideObj(null);
         setIsOnline(true);
-      } catch (e) {
-        console.warn('complete failed', e);
-        Alert.alert('Complete failed', e.message || 'Could not complete ride');
+      } catch (_e) {
+        console.warn('complete failed', _e);
+        Alert.alert('Complete failed', _e.message || 'Could not complete ride');
       }
     };
 
@@ -333,11 +330,11 @@ export default function DriverDashboard({ navigation }) {
         const ride = rideSnap.data();
         dropFromRide = ride.dropLocation?.name || ride.dropLocation?.address || ride.destination?.name || null;
       }
-    } catch (e) {
-      console.warn('Could not read ride for reject dialog', e);
+    } catch (_e) {
+      console.warn('Could not read ride for reject dialog', _e);
     }
 
-  const drop = incomingOffer.dropAddress || incomingOffer.dropLocation?.name || formatCoords(incomingOffer.dropLocation) || dropFromRide || 'unknown drop';
+  const drop = incomingOffer.dropAddress || incomingOffer.dropLocation?.name || (incomingOffer.dropLocation && typeof incomingOffer.dropLocation.latitude === 'number' && typeof incomingOffer.dropLocation.longitude === 'number' ? `${incomingOffer.dropLocation.latitude.toFixed(4)}, ${incomingOffer.dropLocation.longitude.toFixed(4)}` : null) || dropFromRide || 'unknown drop';
     Alert.alert(
       'Confirm Reject',
       `Reject ride to: ${drop}?`,
@@ -350,10 +347,10 @@ export default function DriverDashboard({ navigation }) {
             try {
               await updateDoc(doc(db, 'driver_offers', incomingOffer.id), { status: 'rejected' });
               setIncomingOffer(null);
-            } catch (e) {
-              console.warn('reject failed', e);
-              Alert.alert('Reject failed', e.message || 'Could not reject offer');
-            }
+          } catch (_e) {
+            console.warn('reject failed', _e);
+            Alert.alert('Reject failed', _e.message || 'Could not reject offer');
+          }
           }
         }
       ]
@@ -369,12 +366,12 @@ export default function DriverDashboard({ navigation }) {
       const { markArrived } = await import('../../firebase/rideService');
       await markArrived(activeRideId);
       Alert.alert('Arrived', 'Marked as arrived at pickup.');
-    } catch (e) {
-      console.warn('markArrived failed', e);
-      if (e?.code === 'permission-denied') {
+    } catch (_e) {
+      console.warn('markArrived failed', _e);
+      if (_e?.code === 'permission-denied') {
         Alert.alert('Permission denied', 'Cannot mark arrived. Check Firestore rules or your auth status.');
       } else {
-        Alert.alert('Failed', e?.message || 'Could not mark arrived');
+        Alert.alert('Failed', _e?.message || 'Could not mark arrived');
       }
     }
   };
@@ -408,12 +405,12 @@ export default function DriverDashboard({ navigation }) {
         const route = await getRouteBetweenCoords({ latitude: loc.latitude, longitude: loc.longitude }, { latitude: data.pickupLocation.latitude, longitude: data.pickupLocation.longitude });
         setRouteCoords(route.coordinates || route.geometry?.coordinates || []);
       }
-    } catch (e) {
-      console.warn('navigate to pickup failed', e);
-      if (e?.code === 'permission-denied') {
+    } catch (_e) {
+      console.warn('navigate to pickup failed', _e);
+      if (_e?.code === 'permission-denied') {
         Alert.alert('Permission denied', 'Cannot read ride details. Check Firestore rules or auth.');
       } else {
-        Alert.alert('Navigation failed', e?.message || 'Could not compute route to pickup');
+        Alert.alert('Navigation failed', _e?.message || 'Could not compute route to pickup');
       }
     }
   };
@@ -427,7 +424,11 @@ export default function DriverDashboard({ navigation }) {
           <Text style={{ color: '#fff' }}>{isOnline ? 'Go Offline' : 'Go Online'}</Text>
         </TouchableOpacity>
       </View>
-      <MapComponent showUserLocation={true} selectedDriverId={auth.currentUser?.uid} selectedDriverLive={selectedDriverLive} routeCoordinates={routeCoords} followDriver={!!activeRideId} />
+  <MapComponent
+    userLocation={currentLocation || null}
+    drivers={[]}
+    selectedDriverId={null}
+  />
 
   {/* profile card removed per request */}
 

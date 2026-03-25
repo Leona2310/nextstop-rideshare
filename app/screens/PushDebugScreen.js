@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Alert, ScrollView, TextInput } from 'react-native';
-import { auth } from '../firebase/firebaseConfig';
+import { auth , db } from '../firebase/firebaseConfig';
 import { registerForPushNotificationsAsync, sendPushNotifications, broadcastToAllUsers } from '../firebase/notificationsService';
 import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../firebase/firebaseConfig';
+
 
 export default function PushDebugScreen() {
   const [token, setToken] = useState(null);

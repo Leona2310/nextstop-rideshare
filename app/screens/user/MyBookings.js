@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { SafeAreaView, Text, FlatList, View, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import TopBar from '../../components/TopBar';
-import { auth } from '../../firebase/firebaseConfig';
+import { auth , db } from '../../firebase/firebaseConfig';
 import { collection, query, where, orderBy, getDocs, updateDoc, doc as firestoreDoc } from 'firebase/firestore';
-import { db } from '../../firebase/firebaseConfig';
+
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { reverseGeocodeToAddress } from '../../services/locationService';
 
@@ -222,7 +222,7 @@ function getDropName(item, dropNamesMap) {
   // (dropNames is a state map keyed by ride id)
   try {
     // access dropNames by closure (component-level state)
-    // eslint-disable-next-line no-undef
+     
     if (dropNamesMap && dropNamesMap[item.id]) {
       const resolved = dropNamesMap[item.id];
       // filter out coordinate-like strings (do not show coords)

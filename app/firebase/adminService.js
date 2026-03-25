@@ -1,6 +1,6 @@
-import { auth } from './firebaseConfig';
+import { auth , db } from './firebaseConfig';
 import { doc, getDoc, setDoc, deleteDoc, collection, getDocs, query, where } from 'firebase/firestore';
-import { db } from './firebaseConfig';
+
 
 /* ================= CREATE ADMIN ================= */
 export async function createAdminProfile(profile) {
