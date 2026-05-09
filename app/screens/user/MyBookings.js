@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
-import { SafeAreaView, Text, FlatList, View, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
+import { collection, doc as firestoreDoc, getDocs, query, updateDoc, where } from 'firebase/firestore';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import TopBar from '../../components/TopBar';
-import { auth , db } from '../../firebase/firebaseConfig';
-import { collection, query, where, orderBy, getDocs, updateDoc, doc as firestoreDoc } from 'firebase/firestore';
+import { auth, db } from '../../firebase/firebaseConfig';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { reverseGeocodeToAddress } from '../../services/locationService';
@@ -176,10 +176,10 @@ export default function MyBookings({ navigation }) {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.title}>Status: {item.status || 'unknown'}</Text>
                     <Text style={styles.sub}>Pickup: {formatLocation(item.pickupLocation) || 'Sophia College'}</Text>
-                    <Text style={styles.sub}>Drop: {getDropName(item, dropNames)}</Text>
+                    <Text style={styles.sub}>Drop (exact): {getDropName(item, dropNames)}</Text>
                     <View style={{ flexDirection: 'row', marginTop: 6, justifyContent: 'space-between' }}>
-                      <Text style={styles.sub}>ETA: {getEta(item)}</Text>
-                      <Text style={styles.sub}>Fare: ₹{(item.fare?.total ?? item.estimatedPrice) ?? '--'}</Text>
+                      <Text style={styles.sub}>ETA (exact): {getEta(item)}</Text>
+                      <Text style={styles.sub}>Fare (exact): ₹{(item.fare?.total ?? item.estimatedPrice ?? item.fareWithTip) ?? '--'}{(item.tip ? ` (incl. tip ₹${item.tip})` : '')}</Text>
                       <Text style={styles.sub}>{item.vehicleType || ''}</Text>
                     </View>
                     <Text style={[styles.sub, { marginTop: 6, fontSize: 12, color: '#999' }]}>{item.createdAt ? formatDate(item.createdAt) : ''}</Text>

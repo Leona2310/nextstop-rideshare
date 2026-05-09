@@ -1,4 +1,5 @@
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React from 'react';
+import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity } from 'react-native';
 import BottomSheet from './BottomSheet';
 
 export default function SearchingBottomSheet({ visible, onCancel }) {
@@ -6,7 +7,7 @@ export default function SearchingBottomSheet({ visible, onCancel }) {
     <BottomSheet visible={visible} heightRatio={0.3}>
       <View style={styles.container}>
         <Text style={styles.title}>Searching for drivers</Text>
-  <Text style={styles.info}>We will notify you when a driver accepts.</Text>
+        <Text style={styles.info}>We'll notify you when a driver accepts.</Text>
         <ActivityIndicator style={{ marginTop: 12 }} size="large" />
         <TouchableOpacity style={styles.cancelBtn} onPress={onCancel}><Text style={styles.cancelText}>Cancel</Text></TouchableOpacity>
       </View>

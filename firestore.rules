@@ -9,272 +9,135 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isVerified() {
-      return request.auth.token.email_verified == true;
-    }
-
-    function isOwner(uid) {
-      return request.auth.uid == uid;
-    }
-
-    function isAdminClaim() {
+    function isAdmin() {
       return request.auth.token.admin == true;
-    }
-
-    function isDriverClaim() {
-      return request.auth.token.driver == true;
-    }
-
-    function validRole(role) {
-      return role in ['student','teacher','staff','driver','admin'];
-    }
-
-    /* ================= ADMINS ================= */
-
-    match /admins/{userId} {
-      // Admin documents can be read by admins or the owner; only admins may create/update/delete
-      allow read: if isAuthenticated() && (isAdminClaim() || isOwner(userId));
-      allow create, update, delete: if isAuthenticated() && isAdminClaim();
     }
 
     /* ================= USERS ================= */
 
     match /users/{userId} {
-      // Users may read their own profile; admins may read any
-      allow read: if isAuthenticated() && (isOwner(userId) || isAdminClaim());
-
-      // Users create their own profile after email verification, name must be a string and role valid
-      allow create: if isAuthenticated()
-        && isOwner(userId)
-        && isVerified()
-        && request.resource.data.name is string
-        && validRole(request.resource.data.role);
-
-      // Owner can update their profile but cannot change `role`; admins can update any field including role
-      allow update: if isAuthenticated()
-        && (isOwner(userId) || isAdminClaim())
-        && (isAdminClaim() || request.resource.data.role == resource.data.role);
-
-      // Only admins may delete user documents
-      allow delete: if isAuthenticated() && isAdminClaim();
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
+      allow read, write: if isAdmin();
     }
 
-    /* ================= PUBLIC PUSH TOKENS ================= */
-    // Lightweight collection mapping userId -> { token: string }
-    // Allow authenticated reads so clients can fetch tokens for broadcasts without
-    // exposing full user profiles in the `users` collection.
+    /* ================= PUSH TOKENS ================= */
+
     match /publicPushTokens/{userId} {
-      allow read: if isAuthenticated();
-      // Users may create/update their own token doc; admins may update any
-      allow create, update: if isAuthenticated() && (isOwner(userId) || isAdminClaim());
-      allow delete: if isAuthenticated() && isAdminClaim();
-    }
-
-    /* ================= STUDENTS ================= */
-
-    match /students/{userId} {
-      allow read, create, update: if isAuthenticated() && (isOwner(userId) || isAdminClaim());
-      allow delete: if isAuthenticated() && isAdminClaim();
-    }
-
-    /* ================= TEACHERS ================= */
-
-    match /teachers/{userId} {
-      allow read, create, update: if isAuthenticated() && (isOwner(userId) || isAdminClaim());
-      allow delete: if isAuthenticated() && isAdminClaim();
-    }
-
-    /* ================= STAFF ================= */
-
-    match /staff/{userId} {
-      allow read, create, update: if isAuthenticated() && (isOwner(userId) || isAdminClaim());
-      allow delete: if isAuthenticated() && isAdminClaim();
-    }
-
-    /* ================= DRIVERS ================= */
-
-    match /drivers/{userId} {
-  // Allow reading driver public/profile + liveLocation to authenticated users (passengers need to see drivers)
-  allow read: if isAuthenticated();
-  // Creation/update of driver profile still restricted to owner or admins
-  allow create, update: if isAuthenticated() && (isOwner(userId) || isAdminClaim());
-      allow delete: if isAuthenticated() && isAdminClaim();
-    }
-
-    match /driverApplications/{applicationId} {
-      // driverApplications are owned by the applicant via the `userId` field
-      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdminClaim());
-      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid
-        && request.resource.data.name is string
-        && request.resource.data.licenseNumber is string;
-      // Only admins may approve/modify or delete applications
-      allow update, delete: if isAuthenticated() && isAdminClaim();
-    }
-
-    /* ================= DRIVER OFFERS ================= */
-    match /driver_offers/{offerId} {
-      // Ride owner (passenger) may create offers for their own ride. Offers must include driverId, rideId, status, sentAt, and expiresAt.
-      allow create: if isAuthenticated()
-        && request.resource.data.driverId is string
-        && request.resource.data.rideId is string
-        && request.resource.data.status == 'sent'
-        && request.resource.data.sentAt is timestamp
-        && request.resource.data.expiresAt is timestamp
-        // Only allow the ride owner to create offers for their ride
-        && get(/databases/$(database)/documents/rides/$(request.resource.data.rideId)).data.userId == request.auth.uid;
-
-      // Drivers may read offers addressed to them; ride owner or admins may also read
-      allow read: if isAuthenticated() && (
-        request.auth.uid == resource.data.driverId
-        || (resource.data.rideId is string && get(/databases/$(database)/documents/rides/$(resource.data.rideId)).data.userId == request.auth.uid)
-        || isAdminClaim()
-      );
-
-      // Drivers may update their offer status (accept/reject). Admins may update as well.
-      allow update: if isAuthenticated() && (
-        (request.auth.uid == resource.data.driverId && (request.resource.data.status == 'accepted' || request.resource.data.status == 'rejected'))
-        || isAdminClaim()
-      );
-
-      allow delete: if isAuthenticated() && isAdminClaim();
-    }
-
-    /* ================= RIDE OFFERS (client-facing per-ride docs) ================= */
-    match /rideOffers/{offerId} {
-      // ride owner may create rideOffers for their ride only
-      allow create: if isAuthenticated()
-        && request.resource.data.driverId is string
-        && request.resource.data.rideId is string
-        && request.resource.data.status == 'sent'
-        && get(/databases/$(database)/documents/rides/$(request.resource.data.rideId)).data.userId == request.auth.uid;
-
-      // Drivers may read offers addressed to them; ride owner or admins may also read
-      allow read: if isAuthenticated() && (
-        request.auth.uid == resource.data.driverId
-        || (resource.data.rideId is string && get(/databases/$(database)/documents/rides/$(resource.data.rideId)).data.userId == request.auth.uid)
-        || isAdminClaim()
-      );
-
-      // Drivers may update their offer status to accepted/rejected
-      allow update: if isAuthenticated() && (
-        (request.auth.uid == resource.data.driverId && (request.resource.data.status == 'accepted' || request.resource.data.status == 'rejected'))
-        || isAdminClaim()
-      );
-
-      allow delete: if isAuthenticated() && isAdminClaim();
+      allow read, create, update: if isAuthenticated();
     }
 
     /* ================= RIDES ================= */
 
     match /rides/{rideId} {
+
+      /* ===== READ ===== */
       allow read: if isAuthenticated();
 
-      // Allow drivers to create scheduled/driver-initiated rides
-      allow create: if isAuthenticated() && (
-        // driver-created ride
-        (isDriverClaim() && request.resource.data.driverId == request.auth.uid && request.resource.data.route is string)
-        // OR passenger-created ride request
-        || (request.resource.data.userId == request.auth.uid
-          && request.resource.data.driverId == null
-          && request.resource.data.status == 'searching'
-          // pickup/drop may be a simple address string or a lat/lng map
-          && (request.resource.data.pickupLocation is map || request.resource.data.pickupLocation is string)
-          && (request.resource.data.dropLocation is map || request.resource.data.dropLocation is string))
-      );
-
-  // Allow updates in these cases:
-      // - Driver already assigned may update the ride
-      // - A driver may claim an unassigned ride by setting driverId to their uid while changing status to 'accepted' or 'in_progress'
-      // - Any passenger in passengerIds may update
-      // - Admins may update
-      // - Ride owner may update only specific debug or cancellation fields (see rules below)
-  allow update: if isAuthenticated() && (
-        resource.data.driverId == request.auth.uid
-        || (
-          // Claiming an unassigned ride (atomic claim)
-          resource.data.driverId == null
-          && request.resource.data.driverId == request.auth.uid
-          && (request.resource.data.status == 'accepted' || request.resource.data.status == 'in_progress')
-        )
-        || (request.auth.uid in resource.data.passengerIds)
-        || isAdminClaim()
-        // Allow the ride creator to update only the `offerDiagnostics` field (debugging helper)
-        || (
-          request.auth.uid == resource.data.userId
-          && request.resource.data.diff(resource.data).changedKeys().hasOnly(['offerDiagnostics'])
-        )
-        // Allow the ride creator to cancel the ride. They may only set `status` to 'cancelled' and
-        // provide a `cancelledAt` timestamp. `driverId` must remain unchanged.
-        || (
-          request.auth.uid == resource.data.userId
-          && request.resource.data.status == 'cancelled'
-          && request.resource.data.cancelledAt is timestamp
-          && request.resource.data.driverId == resource.data.driverId
-          && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','cancelledAt'])
-        )
-        // Allow a passenger to JOIN the ride by appending themselves to `passengers`
-        // This operation must only change `passengers` and `currentSeats`,
-        // increment currentSeats by exactly 1, and add the authenticated uid to the passengers list.
-        || (
-          // basic auth
-          isAuthenticated()
-          // both old and new passengers must be arrays, allow missing old passengers (first join)
-          && (resource.data.passengers is list || resource.data.passengers == null)
-          && request.resource.data.passengers is list
-          // only `passengers` and `currentSeats` may change in this operation
-          && request.resource.data.diff(resource.data).changedKeys().hasOnly(['passengers','currentSeats'])
-          // currentSeats must increase by exactly 1 (handle missing currentSeats as 0)
-          && (
-               (resource.data.currentSeats is int && request.resource.data.currentSeats == resource.data.currentSeats + 1)
-               || (resource.data.currentSeats == null && request.resource.data.currentSeats == 1)
-             )
-          // user must not already be a passenger (handle missing passengers)
-          && (resource.data.passengers == null || !(request.auth.uid in resource.data.passengers))
-          // user must be included in the new passengers array
-          && (request.auth.uid in request.resource.data.passengers)
-          // new passengers must include all previous passengers (or none)
-          && (resource.data.passengers == null || request.resource.data.passengers.hasAll(resource.data.passengers))
-        )
-      );
-
-      allow delete: if isAuthenticated() && isAdminClaim();
-    }
-
-    /* ================= ACTIVE DRIVERS (runtime presence) ================= */
-    match /activeDrivers/{driverId} {
-      // Any authenticated user may read active drivers (for nearby driver discovery)
-      allow read: if isAuthenticated();
-      // Drivers can create/update/delete their own active driver document
-      allow create, update, delete: if isAuthenticated() && request.auth.uid == driverId;
-    }
-
-    /* ================= BOOKINGS ================= */
-
-    match /bookings/{bookingId} {
-      allow read: if isAuthenticated()
-        && (resource.data.userId == request.auth.uid
-            || resource.data.driverId == request.auth.uid
-            || isAdminClaim());
-
-      // Allow updates by owner, assigned driver, or admins. Limit which fields owners can change if needed.
-      allow update: if isAuthenticated()
-        && (resource.data.userId == request.auth.uid
-            || resource.data.driverId == request.auth.uid
-            || isAdminClaim());
-
+      /* ===== CREATE ===== */
       allow create: if isAuthenticated()
         && request.resource.data.userId == request.auth.uid
-        && request.resource.data.rideId is string
-        && request.resource.data.seats is int;
+        && request.resource.data.driverId == null
+        && request.resource.data.status == "SEARCHING"
+        && request.resource.data.passengers is list
+        && request.resource.data.passengers.size() == 1
+        && request.resource.data.passengers[0] == request.auth.uid
+        && request.resource.data.currentSeats == 1;
 
-      allow delete: if isAuthenticated() && isAdminClaim();
+      /* ===== UPDATE (JOIN / LEAVE / DRIVER) ===== */
+      allow update: if isAuthenticated() && (
+
+        // Admin full control
+        isAdmin()
+
+        // Driver can update
+        || resource.data.driverId == request.auth.uid
+
+        || (
+          request.auth != null
+          && request.resource.data.driverId == request.auth.uid
+          && resource.data.driverId == null
+          && resource.data.status == "SEARCHING"
+          && request.resource.data.status == "ACCEPTED"
+        )
+
+        // Allow the assigned driver to mark arrival at pickup
+        || (
+          request.auth != null
+          && request.auth.uid == resource.data.driverId
+          && request.resource.data.status == "ARRIVED"
+        )
+
+        // Owner (creator) may cancel the ride by setting status to 'cancelled' and cancelledAt only
+        || (
+          (resource.data.userId == request.auth.uid || resource.data.createdBy == request.auth.uid)
+          && request.resource.data.status == 'cancelled'
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'cancelledAt'])
+        )
+
+        // Passenger can update (join/leave)
+        || request.auth.uid in (resource.data.passengers || [])
+
+        // Allow join/leave updates
+        || request.resource.data.diff(resource.data)
+             .changedKeys()
+             .hasOnly(['passengers', 'currentSeats'])
+      );
+
+      /* ===== DELETE ===== */
+      allow delete: if isAdmin();
     }
 
-    /* ================= ANNOUNCEMENTS ================= */
+    /* ================= OTHER COLLECTIONS ================= */
+
+    match /driver_offers/{offerId} {
+      allow read: if isAuthenticated();
+  // Create: allow authenticated clients to create offers (sendOffers runs client-side in this project)
+  // Also allow admins to create offers (e.g., server-side or callable functions)
+  allow create: if isAuthenticated() || isAdmin();
+      // Update: only the intended driver or admin may change the offer (e.g., accept/reject)
+      allow update: if isAdmin() || (isAuthenticated() && resource.data.driverId == request.auth.uid && (
+        // Only allow status transitions and timestamps to be modified by the driver
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'acceptedAt', 'rejectedAt'])
+      ));
+      // Delete: admin only
+      allow delete: if isAdmin();
+    }
+
+    match /rideOffers/{offerId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /activeDrivers/{driverId} {
+      allow read: if isAuthenticated();
+      allow write: if request.auth.uid == driverId;
+    }
+
+    match /drivers/{driverId} {
+      // Drivers may read their own profile and update their own status (isOnline)
+      allow read: if isAuthenticated();
+  // Allow drivers to write their own document, and admins to manage driver documents
+  allow write: if isAdmin() || (isAuthenticated() && request.auth.uid == driverId);
+  allow create: if isAdmin() || (isAuthenticated() && request.auth.uid == driverId);
+    }
+
+    /* ================= STUDENTS ================= */
+    // Allow authenticated users to create and manage their own student profile
+    match /students/{studentId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.auth.uid == studentId;
+      allow update: if isAuthenticated() && request.auth.uid == studentId;
+      allow delete: if isAdmin();
+      // Admins have full control
+      allow read, write: if isAdmin();
+    }
+
+    match /bookings/{bookingId} {
+      allow read, write: if isAuthenticated();
+    }
 
     match /announcements/{announcementId} {
       allow read: if isAuthenticated();
-      allow create, update, delete: if isAuthenticated() && isAdminClaim();
+      allow write: if isAdmin();
     }
 
     /* ================= FALLBACK ================= */

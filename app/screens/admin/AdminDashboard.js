@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { Alert, SafeAreaView, StyleSheet, Text, TouchableOpacity, View, ScrollView, RefreshControl } from 'react-native';
-import { logoutUser, getFriendlyAuthError } from '../../firebase/authService';
-import { getAdminStats, getAllUsers, getAllRides, deleteUser } from '../../firebase/adminService';
-import { getPendingDrivers, approveDriver, rejectDriver } from '../../firebase/driverService';
 import { collection, query, where } from 'firebase/firestore';
-import { db, safeOnSnapshot } from '../../firebase/firebaseConfig';
+import { useEffect, useState } from 'react';
+import { Alert, RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import TopBar from '../../components/TopBar';
+import { deleteUser, getAdminStats, getAllRides, getAllUsers } from '../../firebase/adminService';
+import { getFriendlyAuthError, logoutUser } from '../../firebase/authService';
+import { approveDriver, getPendingDrivers, rejectDriver } from '../../firebase/driverService';
+import { db, safeOnSnapshot } from '../../firebase/firebaseConfig';
 
 export default function AdminDashboard({ navigation }) {
   const [stats, setStats] = useState(null);
@@ -198,9 +198,9 @@ export default function AdminDashboard({ navigation }) {
           {allRides.slice(0, 10).map((ride) => (
             <View key={ride.id} style={styles.rideCard}>
               <Text style={styles.rideText}>From: {typeof ride.pickupLocation === 'object' ? (ride.pickupLocation.address || `${ride.pickupLocation.latitude}, ${ride.pickupLocation.longitude}`) : ride.pickupLocation}</Text>
-              <Text style={styles.rideText}>To: {typeof ride.dropLocation === 'object' ? (ride.dropLocation.address || `${ride.dropLocation.latitude}, ${ride.dropLocation.longitude}`) : ride.dropLocation}</Text>
+              <Text style={styles.rideText}>To (exact): {typeof ride.dropLocation === 'object' ? (ride.dropLocation.address || ride.dropLocation.name || `${ride.dropLocation.latitude}, ${ride.dropLocation.longitude}`) : ride.dropLocation}</Text>
               <Text style={styles.rideText}>Status: {ride.status}</Text>
-              <Text style={styles.rideText}>Fare: ₹{ride.estimatedPrice}</Text>
+              <Text style={styles.rideText}>Fare (exact): ₹{ride.fare?.total ?? ride.estimatedPrice ?? ride.fareWithTip}{(ride.tip ? ` (incl. tip ₹${ride.tip})` : '')}</Text>
             </View>
           ))}
         </View>

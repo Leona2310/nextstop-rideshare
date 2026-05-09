@@ -1,11 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Location from 'expo-location';
 import { collection, query, where } from 'firebase/firestore';
 import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Dimensions,
-  Linking,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -16,6 +14,7 @@ import {
 } from 'react-native';
 import MapComponent from '../../../components/MapComponent';
 import DriverCardBottomSheet from '../../components/DriverCardBottomSheet';
+import RideCard from '../../components/RideCard';
 import RideTypeSelector from '../../components/RideTypeSelector';
 import SearchingBottomSheet from '../../components/SearchingBottomSheet';
 import TopBar from '../../components/TopBar';
@@ -23,8 +22,7 @@ import { calculateFare } from '../../config/fareConfig';
 import { getFriendlyAuthError, logoutUser } from '../../firebase/authService';
 import { auth, db, safeOnSnapshot } from '../../firebase/firebaseConfig';
 import { getProfile } from '../../firebase/profileService';
-import { joinRide as clientJoinRide } from '../../firebase/rideClientService';
-import { createRideRequest } from '../../firebase/rideService';
+import { cancelRide, createRideRequest, leaveRide, joinRide as transactionalJoinRide } from '../../firebase/rideService';
 import { getFixedSophiaPickup, getPlaceDetails, getPlacePredictions, getRoadDistanceKm } from '../../services/locationService';
 // ...existing imports (profile removed)
 
@@ -39,7 +37,6 @@ const VEHICLE_TYPES = {
 export default function UserHome({ navigation }) {
   // profile fetching removed per request
   const [location, setLocation] = useState(null);
-  const [permissionDenied, setPermissionDenied] = useState(false);
   // Pickup is fixed to Sophia College — we fetch its address/coords on mount
   const [pickupLocation, setPickupLocation] = useState('Sophia College, Mumbai');
   const [dropLocation, setDropLocation] = useState('');
@@ -60,10 +57,10 @@ export default function UserHome({ navigation }) {
   const [userProfile, setUserProfile] = useState(null);
   const [tick, setTick] = useState(0);
   const [rideTypeVisible, setRideTypeVisible] = useState(false);
+  const [allowPassengers, setAllowPassengers] = useState(true);
 
   useEffect(() => {
-    initializeLocation();
-    // Load fixed Sophia pickup coordinates
+    // Load fixed Sophia pickup coordinates (no device location requested)
     (async () => {
       const s = await getFixedSophiaPickup();
       if (s) {
@@ -79,7 +76,7 @@ export default function UserHome({ navigation }) {
       try {
         const p = await getProfile();
         setUserProfile(p);
-      } catch (_e) { console.warn('failed to load profile', _e); }
+      } catch (e) { console.warn('failed to load profile', e); }
     })();
   }, []);
 
@@ -93,29 +90,37 @@ export default function UserHome({ navigation }) {
   useEffect(() => {
     let unsub = null;
     try {
-  const ridesCol = collection(db, 'rides');
-  // listen for both 'OPEN' and legacy 'searching' statuses so broadcasts created
-  // by createRideRequest are visible to other users during the 2-minute window
-  const q = query(ridesCol, where('status', 'in', ['OPEN', 'searching']));
+const ridesCol = collection(db, 'rides');
+// Only show rides that are SEARCHING (created and open for joins).
+const q = query(ridesCol, where('status', '==', 'SEARCHING'), where("allowPassengers", "==", true));
       unsub = safeOnSnapshot(q, (snap) => {
         const now = Date.now();
         const items = [];
         snap.docs.forEach(d => {
           const data = d.data();
-          // Only include rides that have expiresAt in future
           const expiresAt = data.expiresAt && typeof data.expiresAt.toMillis === 'function' ? data.expiresAt.toMillis() : (data.expiresAt ? (new Date(data.expiresAt)).getTime() : null);
           if (!expiresAt || expiresAt <= now) return;
           items.push({ id: d.id, ...data, expiresAt });
         });
-        // sort by soonest expiry
         items.sort((a, b) => a.expiresAt - b.expiresAt);
         setOpenRides(items);
       });
-    } catch (_e) {
-      console.warn('subscribe open rides failed', _e);
+    } catch (e) {
+      console.warn('subscribe open rides failed', e);
     }
     return () => { if (typeof unsub === 'function') unsub(); };
   }, []);
+
+  // Prune expired rides from openRides on each tick to ensure UI removes expired items
+  useEffect(() => {
+    if (!openRides || openRides.length === 0) return;
+    const now = Date.now();
+    const filtered = openRides.filter(r => {
+      const exp = r.expiresAt && (typeof r.expiresAt.toMillis === 'function' ? r.expiresAt.toMillis() : (new Date(r.expiresAt)).getTime());
+      return exp && exp > now;
+    });
+    if (filtered.length !== openRides.length) setOpenRides(filtered);
+  }, [tick]);
 
   // On mount, try to restore last route (resume where the user left off)
   useEffect(() => {
@@ -127,7 +132,7 @@ export default function UserHome({ navigation }) {
           if (parsed && parsed.name && parsed.name !== 'UserHome') {
             // Delay a tick so navigation stack is ready
             setTimeout(() => {
-              try { navigation.navigate(parsed.name, parsed.params || {}); } catch (_e) { /* ignore */ }
+              try { navigation.navigate(parsed.name, parsed.params || {}); } catch (e) { /* ignore */ }
             }, 300);
           }
         }
@@ -135,29 +140,7 @@ export default function UserHome({ navigation }) {
     })();
   }, []);
 
-  const initializeLocation = async () => {
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        console.warn('UserHome: location permission denied');
-        setPermissionDenied(true);
-        Alert.alert('Location Permission', 'Location permission was denied. Map features will be limited.');
-        return;
-      }
-
-      // Try to get current position safely
-      try {
-        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-        if (loc && loc.coords) {
-          setLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude, speed: loc.coords.speed || 0, heading: loc.coords.heading || 0 });
-        }
-      } catch (_err) {
-        console.error('UserHome: getCurrentPositionAsync failed', _err);
-      }
-    } catch (_err) {
-      console.error('UserHome: initializeLocation failed', _err);
-    }
-  };
+  // Device location is intentionally not used in the UI per project requirements.
 
   // Fare calculation uses OSRM road distance and duration; calculateFare handles base/distance/time/booking fee.
 
@@ -196,36 +179,14 @@ export default function UserHome({ navigation }) {
     }
 
     try {
-      // Use Google Places Autocomplete when API key available
+      // Use OpenStreetMap Nominatim-based predictions
       const preds = await getPlacePredictions(text);
       if (forField === 'pickup') setPickupSuggestions(preds);
       else setDropSuggestions(preds);
-    } catch (_err) {
-      console.warn('place predictions failed, falling back to geocode', _err);
-      try {
-        const results = await Location.geocodeAsync(text);
-        const formatted = results.map(r => {
-          const parts = [];
-          if (r.name) parts.push(r.name);
-          if (r.street) parts.push(r.street);
-          if (r.city) parts.push(r.city);
-          if (r.region) parts.push(r.region);
-          if (r.country) parts.push(r.country);
-          const address = parts.join(', ') || `${r.latitude.toFixed(4)}, ${r.longitude.toFixed(4)}`;
-          return {
-            description: address,
-            place_id: null,
-            latitude: r.latitude,
-            longitude: r.longitude
-          };
-        });
-        if (forField === 'pickup') setPickupSuggestions(formatted);
-        else setDropSuggestions(formatted);
-      } catch (_e) {
-        console.warn('geocode fallback failed', _e);
-        if (forField === 'pickup') setPickupSuggestions([]);
-        else setDropSuggestions([]);
-      }
+    } catch (err) {
+      console.warn('place predictions failed', err);
+      if (forField === 'pickup') setPickupSuggestions([]);
+      else setDropSuggestions([]);
     }
   };
 
@@ -248,37 +209,25 @@ export default function UserHome({ navigation }) {
           setPickupLocation(s.address);
           setPickupCoords({ latitude: s.latitude, longitude: s.longitude });
         }
-      } catch (_err) {
-        console.warn('Could not fetch Sophia pickup', _err);
+      } catch (err) {
+        console.warn('Could not fetch Sophia pickup', err);
       }
     }
 
     // If dropCoords missing, try to resolve the typed dropLocation using predictions or geocode
     if (!dropCoords) {
-      if (dropLocation && dropLocation.trim().length > 0) {
-        // Try Nominatim predictions
-        try {
-          const preds = await getPlacePredictions(dropLocation);
-          if (Array.isArray(preds) && preds.length > 0) {
-            const p = preds[0];
-            setDropLocation(p.address || p.description || dropLocation);
-            setDropCoords({ latitude: p.latitude, longitude: p.longitude });
-          } else {
-            // Fallback to expo Location geocode
+          if (dropLocation && dropLocation.trim().length > 0) {
             try {
-              const results = await Location.geocodeAsync(dropLocation);
-              if (results && results.length > 0) {
-                const r = results[0];
-                setDropCoords({ latitude: r.latitude, longitude: r.longitude });
+              const preds = await getPlacePredictions(dropLocation);
+              if (Array.isArray(preds) && preds.length > 0) {
+                const p = preds[0];
+                setDropLocation(p.address || p.description || dropLocation);
+                setDropCoords({ latitude: p.latitude, longitude: p.longitude });
               }
-            } catch (_e) {
-              console.warn('Geocode fallback failed', _e);
+            } catch (err) {
+              console.warn('Resolving dropLocation failed', err);
             }
           }
-        } catch (_err) {
-          console.warn('Resolving dropLocation failed', _err);
-        }
-      }
     }
 
     if (!pickupCoords || !dropCoords) {
@@ -314,14 +263,15 @@ export default function UserHome({ navigation }) {
         },
         vehicleType: selectedVehicle,
         estimatedPrice,
-        tip
+        tip,
+        allowPassengers
       });
 
   // update UI to searching state and navigate to tracking
   setRideId(rideId);
   setSearching(true);
   Alert.alert('Booking Confirmed', `Your ride has been booked!\nRide ID: ${rideId}\nEstimated price: ₹${estimatedPrice}`);
-  try { await AsyncStorage.setItem('lastRoute', JSON.stringify({ name: 'RideTracking', params: { rideId } })); } catch (_e) {}
+  try { await AsyncStorage.setItem('lastRoute', JSON.stringify({ name: 'RideTracking', params: { rideId } })); } catch (e) {}
   navigation.navigate('RideTracking', { rideId });
     } catch (error) {
       console.error('create ride failed:', error);
@@ -343,13 +293,41 @@ export default function UserHome({ navigation }) {
         Alert.alert('Not permitted', 'Only student, teacher or staff accounts may join broadcast rides.');
         return;
       }
-  await clientJoinRide(rideId, auth.currentUser.uid);
+      // Use transactional join to avoid overbooking
+      await transactionalJoinRide(rideId, auth.currentUser.uid);
       Alert.alert('Joined', 'You have joined the ride.');
-      // Optionally navigate to RideTracking
       navigation.navigate('RideTracking', { rideId });
-    } catch (_err) {
-      console.error('join failed', _err);
-      Alert.alert('Join Failed', _err.message || 'Could not join ride');
+    } catch (err) {
+      console.error('join failed', err);
+      Alert.alert('Join Failed', err.message || 'Could not join ride');
+    }
+  };
+
+  const handleLeaveRide = async (rideId) => {
+    if (!auth.currentUser) {
+      Alert.alert('Not signed in', 'Please sign in to leave a ride');
+      return;
+    }
+    try {
+      await leaveRide(rideId, auth.currentUser.uid);
+      Alert.alert('Left', 'You have left the ride');
+    } catch (err) {
+      console.error('leave failed', err);
+      Alert.alert('Leave Failed', err.message || 'Could not leave ride');
+    }
+  };
+
+  const handleCancelRide = async (rideId) => {
+    if (!auth.currentUser) {
+      Alert.alert('Not signed in', 'Please sign in to cancel a ride');
+      return;
+    }
+    try {
+      await cancelRide(rideId, auth.currentUser.uid);
+      Alert.alert('Cancelled', 'Ride cancelled');
+    } catch (err) {
+      console.error('cancel failed', err);
+      Alert.alert('Cancel Failed', err.message || 'Could not cancel ride');
     }
   };
 
@@ -357,31 +335,21 @@ export default function UserHome({ navigation }) {
     try {
       await logoutUser();
       // Navigation will be handled by onAuthStateChanged in app/index.js
-    } catch (_e) {
-      Alert.alert('Logout failed', getFriendlyAuthError(_e));
+    } catch (e) {
+      Alert.alert('Logout failed', getFriendlyAuthError(e));
     }
   };
 
   return (
     <SafeAreaView style={[styles.container, { paddingTop: 64 }]}>
   <TopBar navigation={navigation} showLogout={true} />
-      {/* Map View */}
+  {/* Test notification button removed */}
       <View style={styles.mapContainer}>
         <MapComponent
-          userLocation={location || null}
+          userLocation={pickupCoords || location || null}
           drivers={[]}
           selectedDriverId={null}
         />
-        {permissionDenied && (
-          <View style={styles.permissionNotice} pointerEvents="box-none">
-            <View style={styles.permissionInner}>
-              <Text style={styles.permissionText}>Location permission was denied. Open settings to enable map features.</Text>
-              <TouchableOpacity style={styles.permissionBtn} onPress={() => { try { Linking.openSettings(); } catch (_e) { console.warn('openSettings failed', _e); } }}>
-                <Text style={styles.permissionBtnText}>Open Settings</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
       </View>
       <RideTypeSelector visible={rideTypeVisible} fares={VEHICLE_TYPES} onSelect={async (type) => {
         setRideTypeVisible(false);
@@ -399,21 +367,25 @@ export default function UserHome({ navigation }) {
           <Text style={styles.sectionTitle}>Book Your Ride</Text>
 
           <Text style={styles.label}>Pickup Location</Text>
-          <View style={[styles.input, { justifyContent: 'center' }]}> 
-            <Text>{pickupLocation || 'Sophia College, Mumbai'}</Text>
+          <View style={[styles.inputRow, { alignItems: 'center' }]}> 
+            <Text style={styles.inputIcon}>📍</Text>
+            <Text style={styles.inputText}>{pickupLocation || 'Sophia College, Mumbai'}</Text>
           </View>
 
           <Text style={styles.label}>Drop Location</Text>
-          <TextInput
-            style={styles.input}
-            value={dropLocation}
-            onChangeText={(t) => {
-              setDropLocation(t);
-              setDropCoords(null);
-              scheduleGeocode(t, 'drop');
-            }}
-            placeholder="Enter drop location"
-          />
+          <View style={styles.inputRow}>
+            <Text style={styles.inputIcon}>🏁</Text>
+            <TextInput
+              style={styles.inputTextInput}
+              value={dropLocation}
+              onChangeText={(t) => {
+                setDropLocation(t);
+                setDropCoords(null);
+                scheduleGeocode(t, 'drop');
+              }}
+              placeholder="Enter drop location"
+            />
+          </View>
           {dropSuggestions.length > 0 && (
             <View style={styles.suggestionsBox}>
               {dropSuggestions.map((s, idx) => (
@@ -455,6 +427,7 @@ export default function UserHome({ navigation }) {
                 ]}
                 onPress={() => setSelectedVehicle(key)}
               >
+                <Text style={styles.vehicleEmoji}>{ key === 'GO' ? '🚗' : key === 'SEDAN' ? '🚙' : '🚚' }</Text>
                 <Text style={[
                   styles.vehicleBtnText,
                   selectedVehicle === key && styles.vehicleBtnTextActive
@@ -470,8 +443,27 @@ export default function UserHome({ navigation }) {
 
           {/* Price Display */}
           <View style={styles.priceContainer}>
-            <Text style={styles.priceLabel}>Estimated Price:</Text>
+            <Text style={styles.priceLabel}>Estimated Fare</Text>
             <Text style={styles.priceValue}>₹{estimatedPrice}</Text>
+          </View>
+
+          {/* Allow Passengers Toggle */}
+          <Text style={styles.label}>Allow Passengers</Text>
+          <View style={styles.toggleRow}>
+            <Text style={styles.toggleLabel}>Solo Ride</Text>
+            <TouchableOpacity
+              style={[styles.toggleBtn, !allowPassengers && styles.toggleBtnActive]}
+              onPress={() => setAllowPassengers(false)}
+            >
+              <Text style={styles.toggleBtnText}>🚗</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.toggleBtn, allowPassengers && styles.toggleBtnActive]}
+              onPress={() => setAllowPassengers(true)}
+            >
+              <Text style={styles.toggleBtnText}>👥</Text>
+            </TouchableOpacity>
+            <Text style={styles.toggleLabel}>Shared Ride</Text>
           </View>
 
           {/* Tip Options */}
@@ -498,7 +490,7 @@ export default function UserHome({ navigation }) {
 
           {/* Book Button */}
           <TouchableOpacity
-            style={styles.bookBtn}
+            style={[styles.bookBtn, booking && { opacity: 0.7 }]}
             onPress={handleBooking}
             disabled={booking}
           >
@@ -528,18 +520,11 @@ export default function UserHome({ navigation }) {
             const remainingSec = Math.ceil(remainingMs / 1000);
             const mins = Math.floor(remainingSec / 60);
             const secs = remainingSec % 60;
+            // Render RideCard and countdown
             return (
-              <View key={r.id} style={styles.broadcastItem}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.broadcastDest}>{r.dropLocation && (r.dropLocation.name || r.dropLocation.address) ? (r.dropLocation.name || r.dropLocation.address) : 'Unknown destination'}</Text>
-                  <Text style={styles.broadcastMeta}>ETA: {r.etaToPickup ?? '-'} min • ₹{r.estimatedPrice ?? (r.fare && r.fare.total) ?? '-'}</Text>
-                </View>
-                <View style={styles.broadcastRight}>
-                  <Text style={styles.countdown}>{`${mins}:${String(secs).padStart(2, '0')}`}</Text>
-                  <TouchableOpacity style={styles.joinBtn} onPress={() => handleJoinRide(r.id)}>
-                    <Text style={{ color: 'white' }}>Join</Text>
-                  </TouchableOpacity>
-                </View>
+              <View key={r.id}>
+                <RideCard ride={r} currentUserId={auth.currentUser?.uid} onJoin={handleJoinRide} onLeave={handleLeaveRide} onCancel={handleCancelRide} />
+                <Text style={styles.countdown}>{`${mins}:${String(secs).padStart(2, '0')}`}</Text>
               </View>
             );
           })}
@@ -558,45 +543,56 @@ const styles = StyleSheet.create({
   mapContainer: {
     height: height * 0.4,
   },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingHorizontal: 8
+  },
+  toggleLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#333',
+    minWidth: 60
+  },
+  toggleBtn: {
+    width: 50,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f0f0f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 8
+  },
+  toggleBtnActive: {
+    backgroundColor: '#22A07A',
+  },
+  toggleBtnText: {
+    fontSize: 20,
+    fontWeight: 'bold'
+  },
   map: {
     ...StyleSheet.absoluteFillObject,
   },
-  // mapPlaceholder styles removed; MapComponent handles its own layout
-  permissionNotice: {
-    position: 'absolute',
-    bottom: 12,
-    left: 12,
-    right: 12,
+  mapPlaceholder: {
+    flex: 1,
+    justifyContent: 'center',
     alignItems: 'center',
-  },
-  permissionInner: {
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    padding: 10,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  permissionText: {
-    color: '#fff',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  permissionBtn: {
-    backgroundColor: '#276EF1',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 6,
-  },
-  permissionBtnText: {
-    color: '#fff',
-    fontWeight: '700',
+    backgroundColor: '#e0e0e0',
   },
   bookingPanel: {
-    flex: 1,
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    marginTop: -20,
-    padding: 20,
+  flex: 1,
+  backgroundColor: '#fff',
+  borderTopLeftRadius: 20,
+  borderTopRightRadius: 20,
+  marginTop: -20,
+  padding: 20,
+  shadowColor: '#000',
+  shadowOffset: { width: 0, height: -6 },
+  shadowOpacity: 0.08,
+  shadowRadius: 12,
+  elevation: 8,
   },
   sectionTitle: {
     fontSize: 20,
@@ -612,27 +608,54 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
+    borderColor: '#eee',
+    borderRadius: 12,
     padding: 12,
     marginBottom: 16,
     fontSize: 16,
   },
-  vehicleRow: {
+  inputRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#eee',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     marginBottom: 16,
   },
-  vehicleBtn: {
+  inputIcon: {
+    fontSize: 18,
+    marginRight: 10,
+  },
+  inputText: {
     flex: 1,
-    backgroundColor: '#f0f0f0',
-    padding: 12,
-    borderRadius: 8,
-    marginHorizontal: 4,
-    alignItems: 'center',
+    fontSize: 16,
+  },
+  inputTextInput: {
+    flex: 1,
+    fontSize: 16,
+    padding: 0,
+  },
+  vehicleRow: {
+  flexDirection: 'row',
+  justifyContent: 'space-between',
+  marginBottom: 16,
+  },
+  vehicleBtn: {
+  flex: 1,
+  backgroundColor: '#fafafa',
+  padding: 14,
+  borderRadius: 12,
+  marginHorizontal: 6,
+  alignItems: 'center',
+  borderWidth: 1,
+  borderColor: 'transparent',
   },
   vehicleBtnActive: {
-    backgroundColor: '#276EF1',
+  backgroundColor: '#22A07A',
+  borderColor: '#22A07A',
   },
   vehicleBtnText: {
     fontSize: 16,
@@ -648,23 +671,30 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   priceContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#f8f9fa',
-    padding: 16,
-    borderRadius: 8,
-    marginBottom: 16,
+  flexDirection: 'row',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  backgroundColor: '#fff',
+  padding: 18,
+  borderRadius: 12,
+  marginBottom: 16,
+  borderWidth: 1,
+  borderColor: '#f1f1f1',
+  shadowColor: '#000',
+  shadowOffset: { width: 0, height: 4 },
+  shadowOpacity: 0.06,
+  shadowRadius: 8,
+  elevation: 4,
   },
   priceLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
+  fontSize: 14,
+  fontWeight: '600',
+  color: '#666',
   },
   priceValue: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#276EF1',
+  fontSize: 22,
+  fontWeight: '900',
+  color: '#22A07A',
   },
   tipRow: {
     flexDirection: 'row',
@@ -690,15 +720,25 @@ const styles = StyleSheet.create({
   },
   bookBtn: {
     backgroundColor: '#22A07A',
-    padding: 16,
-    borderRadius: 8,
+    paddingVertical: 16,
+    borderRadius: 12,
     alignItems: 'center',
     marginBottom: 16,
+    width: '100%',
+    shadowColor: '#22A07A',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 6,
   },
   bookBtnText: {
     color: '#fff',
     fontSize: 18,
-    fontWeight: 'bold',
+    fontWeight: '800',
+  },
+  vehicleEmoji: {
+    fontSize: 22,
+    marginBottom: 6,
   },
   navRow: {
     flexDirection: 'row',
@@ -755,10 +795,27 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#f1f1f1',
   },
+  rideCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  rideCardLeft: {
+    flex: 1,
+    paddingRight: 8,
+  },
   broadcastDest: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#222',
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111',
   },
   broadcastMeta: {
     fontSize: 12,
@@ -770,14 +827,24 @@ const styles = StyleSheet.create({
   },
   countdown: {
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '800',
     color: '#d9534f',
-    marginBottom: 6,
+    marginBottom: 8,
   },
   joinBtn: {
     backgroundColor: '#276EF1',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    shadowColor: '#276EF1',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  joinBtnText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 14,
   },
 });

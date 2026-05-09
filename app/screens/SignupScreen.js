@@ -1,17 +1,17 @@
 import { useState } from "react";
 import {
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  SafeAreaView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View
+    ActivityIndicator,
+    Alert,
+    KeyboardAvoidingView,
+    Platform,
+    SafeAreaView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View
 } from "react-native";
-import { signup, getFriendlyAuthError } from "../firebase/authService";
+import { getFriendlyAuthError, signup } from "../firebase/authService";
 import { isValidDomain } from "../utils/domainValidator";
 
 export default function SignupScreen({ navigation }) {
@@ -31,8 +31,12 @@ export default function SignupScreen({ navigation }) {
     }
     setLoading(true);
     try {
-      await signup(email.trim(), password);
-      Alert.alert("Verify Email", "Verification link sent — check your email");
+      const { userCredential, verificationSent } = await signup(email.trim(), password);
+      if (verificationSent) {
+        Alert.alert("Verify Email", "Verification link sent — check your email");
+      } else {
+        Alert.alert("Account created", "Account was created but verification email could not be sent. Please check your email settings or try resending from the app.");
+      }
       navigation.navigate("OTP");
     } catch (e) {
       const msg = getFriendlyAuthError(e);

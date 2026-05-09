@@ -1,5 +1,3 @@
-import * as Location from 'expo-location';
-
 // OpenStreetMap Nominatim base URL for search/geocoding
 const NOMINATIM_BASE = 'https://nominatim.openstreetmap.org';
 // OSRM public routing server (demo) for road distance/duration. Note: subject to rate limits.
@@ -9,15 +7,9 @@ const OSRM_BASE = 'https://router.project-osrm.org';
  * Request location permissions from user
  * @returns {Promise<boolean>} true if granted, false otherwise
  */
+// Stubbed: we no longer request runtime location permissions here per project requirement.
 export async function requestLocationPermission() {
-  try {
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    return status === 'granted';
-    
-  } catch (error) {
-    console.error('Error requesting location permission:', error);
-    return false;
-  }
+  return false;
 }
 
 /**
@@ -25,40 +17,16 @@ export async function requestLocationPermission() {
  * @returns {Promise<boolean>} true if granted, false otherwise
  */
 export async function requestBackgroundLocationPermission() {
-  try {
-    const { status } = await Location.requestBackgroundPermissionsAsync();
-    return status === 'granted';
-  } catch (error) {
-    console.error('Error requesting background location permission:', error);
-    return false;
-  }
+  return false;
 }
 
 /**
  * Get current location
  * @returns {Promise<{latitude: number, longitude: number} | null>}
  */
+// Returning null to force MapComponent to use default center; do not attempt to fetch device location.
 export async function getCurrentLocation() {
-  try {
-    const hasPermission = await requestLocationPermission();
-    if (!hasPermission) {
-      throw new Error('Location permission denied');
-    }
-
-    const location = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.High,
-    });
-
-    return {
-      latitude: location.coords.latitude,
-      longitude: location.coords.longitude,
-      speed: location.coords.speed || 0,
-      heading: location.coords.heading || 0,
-    };
-  } catch (error) {
-    console.error('Error getting current location:', error);
-    return null;
-  }
+  return null;
 }
 
 /**
@@ -67,22 +35,24 @@ export async function getCurrentLocation() {
  */
 export async function reverseGeocodeToAddress(lat, lon) {
   try {
-    const results = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lon });
-    if (!results || results.length === 0) return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-
-    const r = results[0];
-    // Build a readable address from available components
+    // Use Nominatim reverse geocoding (OpenStreetMap)
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&addressdetails=1`;
+    const resp = await fetch(url, { headers: { 'User-Agent': 'NextStopApp/1.0' } });
+    if (!resp.ok) return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+    const json = await resp.json();
+    if (!json) return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+    const addr = json.address || {};
     const parts = [];
-    if (r.name) parts.push(r.name);
-    if (r.street) parts.push(r.street);
-    if (r.city) parts.push(r.city);
-    if (r.region) parts.push(r.region);
-    if (r.postalCode) parts.push(r.postalCode);
-    if (r.country) parts.push(r.country);
-
-    return parts.join(', ') || `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+    if (addr.road) parts.push(addr.road);
+    if (addr.suburb) parts.push(addr.suburb);
+    if (addr.city) parts.push(addr.city);
+    if (addr.state) parts.push(addr.state);
+    if (addr.postcode) parts.push(addr.postcode);
+    if (addr.country) parts.push(addr.country);
+    const formatted = parts.join(', ');
+    return formatted || (json.display_name || `${lat.toFixed(4)}, ${lon.toFixed(4)}`);
   } catch (err) {
-    console.warn('reverseGeocode failed', err);
+    console.warn('reverseGeocode (Nominatim) failed', err);
     return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
   }
 }
@@ -223,24 +193,13 @@ export async function getPlaceDetails(placeIdOrPrediction) {
 /**
  * Return fixed pickup location for Sophia College, Mumbai by querying Nominatim once.
  */
+// Return a stable, hardcoded pickup location for Sophia College per requirement.
 export async function getFixedSophiaPickup() {
-  try {
-    const query = 'Sophia College Mumbai';
-    const url = `${NOMINATIM_BASE}/search?format=json&addressdetails=1&limit=1&q=${encodeURIComponent(query)}&countrycodes=in`;
-    const resp = await fetch(url, { headers: { 'User-Agent': 'NextStopApp/1.0' } });
-    if (!resp.ok) return null;
-    const json = await resp.json();
-    if (!Array.isArray(json) || json.length === 0) return null;
-    const p = json[0];
-    return {
-      address: p.display_name,
-      latitude: parseFloat(p.lat),
-      longitude: parseFloat(p.lon)
-    };
-  } catch (err) {
-    console.warn('getFixedSophiaPickup failed', err);
-    return null;
-  }
+  return {
+    address: 'Sophia College Auditorium, Sophia College Lane (near Vivek Singh Lane), Mumbai',
+  latitude: 18.96952,
+    longitude: 72.8078,
+  };
 }
 
 // (Removed duplicate Google Places getPlaceDetails) We use Nominatim-based getPlaceDetails above.
@@ -251,34 +210,8 @@ export async function getFixedSophiaPickup() {
  * @returns {Promise<Object>} subscription object with remove() method
  */
 export async function watchLocation(callback) {
-  try {
-    const hasPermission = await requestLocationPermission();
-    if (!hasPermission) {
-      throw new Error('Location permission denied');
-    }
-
-    const subscription = await Location.watchPositionAsync(
-      {
-        accuracy: Location.Accuracy.High,
-        timeInterval: 5000, // Update every 5 seconds
-        distanceInterval: 10, // Or every 10 meters
-      },
-      (location) => {
-        callback({
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          speed: location.coords.speed || 0,
-          heading: location.coords.heading || 0,
-          timestamp: location.timestamp,
-        });
-      }
-    );
-
-    return subscription;
-  } catch (error) {
-    console.error('Error watching location:', error);
-    throw error;
-  }
+  // Watching location is not supported in this configuration. Throw to indicate unsupported.
+  throw new Error('watchLocation is not supported: location APIs removed per project constraints');
 }
 
 /**

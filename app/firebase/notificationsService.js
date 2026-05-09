@@ -41,25 +41,20 @@ export async function registerForPushNotificationsAsync(userId) {
       throw new Error('Notification permissions not granted');
     }
 
-    // Get the Expo push token
-    const tokenObject = await Notifications.getExpoPushTokenAsync();
-    const token = tokenObject?.data;
-    if (!token) throw new Error('Failed to obtain Expo push token');
+  // Get the Expo push token
+  const tokenObject = await Notifications.getExpoPushTokenAsync();
+  const token = tokenObject?.data;
+  if (!token) throw new Error('Failed to obtain Expo push token');
 
-    // Save to Firestore under users/{userId}.pushToken (merge so we don't overwrite other fields)
-    const userRef = doc(db, 'users', userId);
-    await setDoc(userRef, { pushToken: token }, { merge: true });
+  // Save to Firestore under users/{userId}.pushToken and users/{userId}.expoPushToken (merge so we don't overwrite other fields)
+  // Do NOT write tokens into `users` collection anymore. Persist tokens only to
+  // the lightweight `publicPushTokens` collection to avoid exposing user profiles.
 
-    // Also mirror token to a lightweight public collection so clients can read tokens
-    // for broadcasting without exposing full user profiles. This collection holds only
-    // the token and is safe to read for authenticated users (see firestore.rules change).
-    try {
-      const tokenRef = doc(db, 'publicPushTokens', userId);
-      await setDoc(tokenRef, { token }, { merge: true });
-    } catch (e) {
-      // Non-fatal: token mirroring failed (maybe rules); proceed without blocking
-      console.warn('mirroring token to publicPushTokens failed', e);
-    }
+  // Persist token to a lightweight public collection so clients can read tokens
+  // for broadcasting without exposing full user profiles. This collection holds only
+  // the token and is intended to be readable by authenticated users per rules.
+  const tokenRef = doc(db, 'publicPushTokens', userId);
+  await setDoc(tokenRef, { token }, { merge: true });
 
     return token;
   } catch (err) {
@@ -69,6 +64,24 @@ export async function registerForPushNotificationsAsync(userId) {
 }
 
 export default { registerForPushNotificationsAsync };
+
+/**
+ * Save an arbitrary public push token to the publicPushTokens collection.
+ * This can be used before user login to persist a device token for broadcasts.
+ */
+export async function savePublicPushToken(token) {
+  if (!token || typeof token !== 'string') throw new Error('token is required');
+  try {
+    const { doc, setDoc } = await import('firebase/firestore');
+    const { db } = await import('./firebaseConfig');
+    const tokenRef = doc(db, 'publicPushTokens', token);
+    await setDoc(tokenRef, { token }, { merge: true });
+    return { ok: true };
+  } catch (e) {
+    console.warn('savePublicPushToken failed', e);
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
 
 /**
  * Send push notifications via Expo push API.

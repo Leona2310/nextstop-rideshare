@@ -1,9 +1,9 @@
-import React, { useEffect, useRef } from 'react';
-import { Animated, Dimensions, StyleSheet, View, TouchableWithoutFeedback } from 'react-native';
+import { useEffect, useRef } from 'react';
+import { Animated, Dimensions, StyleSheet, TouchableWithoutFeedback, View } from 'react-native';
 
 const { height } = Dimensions.get('window');
 
-export default function BottomSheet({ visible = false, heightRatio = 0.4, children, onClose = null }) {
+export default function BottomSheet({ visible = false, heightRatio = 0.4, children, onClose = null, blockBackgroundTouches = true }) {
   const anim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     Animated.timing(anim, { toValue: visible ? 1 : 0, duration: 250, useNativeDriver: true }).start();
@@ -16,7 +16,7 @@ export default function BottomSheet({ visible = false, heightRatio = 0.4, childr
   return (
     <View style={styles.overlay} pointerEvents={visible ? 'auto' : 'none'}>
       <TouchableWithoutFeedback onPress={() => onClose && onClose()}>
-        <View style={styles.backdrop} />
+        <View style={[styles.backdrop, !blockBackgroundTouches && { backgroundColor: 'transparent' }]} pointerEvents={blockBackgroundTouches ? 'auto' : 'none'} />
       </TouchableWithoutFeedback>
       <Animated.View style={[styles.sheet, { height: height * heightRatio, transform: [{ translateY }] }]}>
         {children}

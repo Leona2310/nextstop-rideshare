@@ -1,18 +1,27 @@
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { registerRootComponent } from 'expo';
+import * as Device from 'expo-device';
+import * as Notifications from 'expo-notifications';
 import { onAuthStateChanged } from 'firebase/auth';
-import { registerForPushNotificationsAsync } from './firebase/notificationsService';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, Alert, View } from 'react-native';
 import { auth } from './firebase/firebaseConfig';
+import * as FirebaseNotificationsService from './firebase/notificationsService';
+
+// Ensure notifications are displayed when received
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 // Import profile services
-import { getProfile } from './firebase/profileService';
-import { getAdminProfile } from './firebase/adminService';
 import { getDriverProfile } from './firebase/driverService';
-import { getStudentProfile } from './firebase/studentService';
-import { getTeacherProfile } from './firebase/teacherService';
+import { getProfile } from './firebase/profileService';
 
 // screens (auth)
 import ForgotPassword from './screens/ForgotPassword';
@@ -31,7 +40,6 @@ import HomeScreen from './screens/HomeScreen'; // keep existing simple Home for 
 import MyBookings from './screens/user/MyBookings';
 import RideTrackingScreen from './screens/user/RideTrackingScreen';
 import UserHome from './screens/user/UserHome';
-import PushDebugScreen from './screens/PushDebugScreen';
 
 const RootStack = createNativeStackNavigator();
 
@@ -44,19 +52,67 @@ function App() {
   const [restoreRideId, setRestoreRideId] = useState(null);
 
   useEffect(() => {
-    // Configure notification handler only if expo-notifications is available
-    (async () => {
+    // Request permission and register for notifications on app start
+    async function registerForPushNotifications() {
       try {
-        const Notifications = await import('expo-notifications');
-        Notifications.setNotificationHandler({
-          handleNotification: async () => ({
-            shouldShowAlert: true,
-            shouldPlaySound: false,
-            shouldSetBadge: false,
-          }),
-        });
+        if (!Device || !Device.isDevice) {
+          console.log('Push notifications require a physical device');
+          return;
+        }
+        const { status: existingStatus } = await Notifications.getPermissionsAsync();
+        let finalStatus = existingStatus;
+        if (existingStatus !== 'granted') {
+          const { status } = await Notifications.requestPermissionsAsync();
+          finalStatus = status;
+        }
+        if (finalStatus !== 'granted') {
+          console.log('Permission not granted');
+          return;
+        }
       } catch (e) {
-        console.warn('expo-notifications not available; skipping notification handler setup');
+        console.warn('registerForPushNotifications failed', e);
+      }
+    }
+
+    registerForPushNotifications();
+
+    // Log receipt of notifications for debug
+    const recvSub = Notifications.addNotificationReceivedListener(notification => {
+      console.log('Notification received:', notification);
+    });
+
+    // Register for push notifications (minimal client-side flow using expo-notifications)
+    (async function registerOnStart() {
+      try {
+        // request permission and log token
+        const token = await (async function registerForPushNotificationsAsyncLocal() {
+          try {
+            const { status: existingStatus } = await Notifications.getPermissionsAsync();
+            let finalStatus = existingStatus;
+            if (existingStatus !== 'granted') {
+              const { status } = await Notifications.requestPermissionsAsync();
+              finalStatus = status;
+            }
+            if (finalStatus !== 'granted') {
+              Alert.alert('Notifications', 'Permission for notifications was not granted');
+              return null;
+            }
+            const tokenObj = await Notifications.getExpoPushTokenAsync();
+            const token = tokenObj?.data;
+            console.log('Expo push token (local):', token);
+            return token;
+          } catch (err) {
+            console.warn('registerForPushNotificationsAsyncLocal failed', err);
+            return null;
+          }
+        })();
+
+        // If token obtained and a Firebase helper exists, defer storing to that service when user logs in
+        if (token) {
+          // no-op here; the firebase service used after auth will persist token per-user
+        }
+      } catch (e) {
+        console.warn('registerForPushNotificationsAsync failed on startup', e?.message || e);
       }
     })();
 
@@ -88,10 +144,10 @@ function App() {
             const userRole = baseProfile.role;
             setRole(userRole);
 
-            // Register for push notifications (non-blocking)
+            // Register for push notifications server-side (non-blocking)
             (async () => {
               try {
-                await registerForPushNotificationsAsync(u.uid);
+                await FirebaseNotificationsService.registerForPushNotificationsAsync(u.uid);
                 console.log('Push token registered for', u.uid);
               } catch (e) {
                 console.warn('Push registration failed', e.message || e);
@@ -133,8 +189,10 @@ function App() {
     });
 
     return () => {
-      try { clearTimeout(authTimeout); } catch (e) {}
-      unsub();
+  try { clearTimeout(authTimeout); } catch (e) {}
+  try { if (recvSub && typeof recvSub.remove === 'function') recvSub.remove(); } catch (e) {}
+  try { if (recvSub && typeof recvSub.unsubscribe === 'function') recvSub.unsubscribe(); } catch (e) {}
+  unsub();
     };
   }, []);
 
@@ -163,7 +221,6 @@ function App() {
   <RootStack.Screen name="UserHome" component={UserHome} />
   <RootStack.Screen name="RideTracking" component={RideTrackingScreen} initialParams={restoreRideId ? { rideId: restoreRideId } : undefined} />
       <RootStack.Screen name="MyBookings" component={MyBookings} />
-  <RootStack.Screen name="PushDebug" component={PushDebugScreen} />
       
       <RootStack.Screen name="ProfileSetup" component={ProfileSetupScreen} />
       <RootStack.Screen name="Home" component={HomeScreen} />

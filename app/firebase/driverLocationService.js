@@ -1,17 +1,17 @@
 import {
-  doc,
-  setDoc,
-  deleteDoc,
-  getDoc,
-  collection,
-  query,
-  where,
-  serverTimestamp,
-  GeoPoint,
-  updateDoc,
+    collection,
+    deleteDoc,
+    doc,
+    GeoPoint,
+    getDoc,
+    query,
+    serverTimestamp,
+    setDoc,
+    updateDoc,
+    where,
 } from 'firebase/firestore';
-import { auth, db, safeOnSnapshot } from './firebaseConfig';
 import { getRouteBetweenCoords } from '../services/locationService';
+import { auth, db, safeOnSnapshot } from './firebaseConfig';
 
 // Helper: wait for auth.currentUser to become available or timeout
 export async function waitForAuthReady(timeoutMs = 5000) {
@@ -101,7 +101,7 @@ export async function updateDriverLocation(location, currentRideId = null, isAva
         if (rideSnap.exists()) {
           const ride = rideSnap.data();
           // Decide whether to route to pickup or to drop depending on ride status
-          if (ride.status === 'accepted' && ride.driverId === user.uid) {
+          if (String(ride.status || '').toUpperCase() === 'ACCEPTED' && ride.driverId === user.uid) {
             const pickup = ride.pickupLocation;
             if (pickup && pickup.latitude != null && pickup.longitude != null) {
               const route = await getRouteBetweenCoords(
@@ -116,7 +116,7 @@ export async function updateDriverLocation(location, currentRideId = null, isAva
                 driverId: user.uid,
               });
             }
-          } else if (ride.status === 'in_progress' && ride.driverId === user.uid) {
+          } else if (String(ride.status || '').toUpperCase() === 'ONGOING' && ride.driverId === user.uid) {
             const drop = ride.dropLocation;
             if (drop && drop.latitude != null && drop.longitude != null) {
               const route = await getRouteBetweenCoords(

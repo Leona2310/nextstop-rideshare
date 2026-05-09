@@ -1,9 +1,9 @@
 // ...existing code...
 import {
-  signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  sendPasswordResetEmail,
   sendEmailVerification,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
   signOut
 } from 'firebase/auth';
 
@@ -48,9 +48,18 @@ export const signup = async (email, password) => {
   );
 
   // Email verification (acts as Email OTP)
-  await sendEmailVerification(userCredential.user);
+  let verificationSent = false;
+  try {
+    await sendEmailVerification(userCredential.user);
+    verificationSent = true;
+    console.log('sendEmailVerification: email sent to', userCredential.user.email);
+  } catch (e) {
+    // don't fail signup if verification email couldn't be sent; surface via return value
+    console.warn('sendEmailVerification failed', e);
+    verificationSent = false;
+  }
 
-  return userCredential;
+  return { userCredential, verificationSent };
 };
 
 // backward-compatible name (some screens imported signup)

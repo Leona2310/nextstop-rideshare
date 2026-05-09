@@ -1,4 +1,5 @@
-import { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { auth, db } from './firebaseConfig';
 
 /**
@@ -27,22 +28,7 @@ export async function createDriverProfile(driverData) {
       approvedBy: null,
     });
 
-    // Notify backend/admin about new driver application (best-effort)
-    try {
-      const notifyUrl = (global?.BACKEND_URL || 'http://localhost:3000') + '/admin/notify-driver';
-      fetch(notifyUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          uid: user.uid,
-          name: driverData.name,
-          email: user.email,
-          phone: driverData.phone
-        })
-      }).catch(e => console.warn('notify admin failed', e));
-    } catch (e) {
-      console.warn('notify admin error', e);
-    }
+  // No backend notify: removed server call to avoid localhost/emulator confusion.
 
     return true;
   } catch (error) {
@@ -110,18 +96,26 @@ export async function getPendingDrivers() {
  */
 export async function approveDriver(driverId, adminId) {
   try {
-    // Prefer server-side approval to set custom claims — call backend
-    // Try configured backend or common emulator host fallbacks
-    const configured = global?.BACKEND_URL;
-    const fallbacks = configured ? [configured] : ['http://10.0.2.2:3000', 'http://localhost:3000'];
+  // Prefer server-side approval to set custom claims — call backend if configured in global.BACKEND_URL
+  const configured = global?.BACKEND_URL;
     const user = auth.currentUser;
     if (!user) throw new Error('Not authenticated as admin');
     const token = await user.getIdToken(true);
-    let resp;
-    let lastErr;
-    for (const backend of fallbacks) {
+    let resp = null;
+    // Try callable function first (if functions are deployed)
+    try {
+      const functions = getFunctions();
+      const fn = httpsCallable(functions, 'adminApproveDriver');
+      const callRes = await fn({ uid: driverId }).catch(() => null);
+      if (callRes && callRes.data && callRes.data.ok) {
+        return true;
+      }
+    } catch (e) {
+      // ignore and fallback
+    }
+    if (configured) {
       try {
-        resp = await fetch(backend + '/admin/approve-driver', {
+        resp = await fetch(configured + '/admin/approve-driver', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -129,11 +123,8 @@ export async function approveDriver(driverId, adminId) {
           },
           body: JSON.stringify({ uid: driverId })
         });
-
-        if (resp) break;
       } catch (e) {
-        lastErr = e;
-        console.warn('approveDriver: backend fetch failed for', backend, e.message);
+        console.warn('approveDriver: backend fetch failed for', configured, e.message);
         resp = null;
       }
     }

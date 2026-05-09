@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import MapComponent from '../../../components/MapComponent';
 import TopBar from '../../components/TopBar';
-import { db, safeOnSnapshot } from '../../firebase/firebaseConfig';
+import { auth, db, safeOnSnapshot } from '../../firebase/firebaseConfig';
 import { formatETA } from '../../services/locationService';
 
 export default function RideTrackingScreen({ navigation, route }) {
@@ -41,8 +41,8 @@ export default function RideTrackingScreen({ navigation, route }) {
           const data = snap.data();
           setRide({ id: snap.id, ...data });
           if (data.driverETA) setEta(data.driverETA);
-          // If ride has driverId, subscribe to driver's live location in drivers collection
-          if (data.driverId) {
+      // If ride has driverId, subscribe to driver's live location in drivers collection
+            if (data.driverId) {
             // Unsubscribe previous driver snapshot if any
             try { if (driverUnsubRef.current) { driverUnsubRef.current(); driverUnsubRef.current = null; } } catch (e) {}
             const driverRef = doc(db, 'drivers', data.driverId);
@@ -56,9 +56,31 @@ export default function RideTrackingScreen({ navigation, route }) {
           }
             if (data.pickupOTP) setPickupOTP(data.pickupOTP);
             // If ride completed, clear saved lastRoute so Home doesn't auto-redirect
-            if (data.status === 'COMPLETED' || data.status === 'completed') {
+            const s = String(data.status || '').toUpperCase();
+            if (s === 'COMPLETED') {
               try { AsyncStorage.removeItem('lastRoute'); } catch (e) {}
             }
+
+            // Auto-cancel logic: if ride is still SEARCHING after 5 minutes, cancel it (owner-only)
+            try {
+              if (s === 'SEARCHING' && data.createdAt && data.createdAt.toMillis) {
+                const createdMs = data.createdAt.toMillis();
+                const ageMs = Date.now() - createdMs;
+                const FIVE_MIN = 5 * 60 * 1000;
+                // only the ride owner should perform the cancel write
+                const currentUid = auth.currentUser ? auth.currentUser.uid : null;
+                if (ageMs > FIVE_MIN && currentUid && data.userId && String(currentUid) === String(data.userId)) {
+                  // attempt to cancel once (best-effort). Firestore rules allow the creator to set status to 'cancelled'
+                  (async () => {
+                    try {
+                      await updateDoc(rideRef, { status: 'cancelled', cancelledAt: serverTimestamp() });
+                    } catch (e) {
+                      // ignore: permission may be denied in some environments
+                    }
+                  })();
+                }
+              }
+            } catch (e) { /* ignore auto-cancel failures */ }
         }, (err) => console.warn('ride snapshot error', err));
       } catch (err) {
         console.warn('Failed to subscribe to ride snapshot', err);
@@ -106,8 +128,21 @@ export default function RideTrackingScreen({ navigation, route }) {
             (async () => {
               try {
                 if (rideId) {
-                  const rideRef = doc(db, 'rides', rideId);
-                  await updateDoc(rideRef, { status: 'cancelled', cancelledAt: serverTimestamp() });
+                      // Ensure auth is present and this user is the ride owner before attempting cancel
+                      const currentUid = auth && auth.currentUser ? auth.currentUser.uid : null;
+                      if (!currentUid) {
+                        Alert.alert('Cancel failed', 'You are not signed in. Please sign in and try again.');
+                        return;
+                      }
+                      // Support legacy documents that used `createdBy` as well as modern `userId`
+                      const ownerId = ride && (ride.userId || ride.createdBy || ride.createdById || null);
+                      if (!ownerId || String(currentUid) !== String(ownerId)) {
+                        Alert.alert('Cancel failed', 'Only the ride owner may cancel this ride.');
+                        return;
+                      }
+
+                      const rideRef = doc(db, 'rides', rideId);
+                      await updateDoc(rideRef, { status: 'cancelled', cancelledAt: serverTimestamp() });
                 }
               } catch (e) {
                 console.warn('cancel ride failed', e);
@@ -138,39 +173,85 @@ export default function RideTrackingScreen({ navigation, route }) {
       {/* Map View */}
       <View style={styles.mapContainer}>
         <MapComponent
-          userLocation={driverLive || (ride?.pickupLocation ? { latitude: ride.pickupLocation.latitude, longitude: ride.pickupLocation.longitude } : null)}
-          drivers={driverLive ? [{ id: ride?.driverId || 'driver', latitude: driverLive.latitude, longitude: driverLive.longitude }] : []}
+          userLocation={ride?.pickupLocation && typeof ride.pickupLocation.latitude === 'number' && typeof ride.pickupLocation.longitude === 'number' ? { latitude: ride.pickupLocation.latitude, longitude: ride.pickupLocation.longitude } : null}
+          drivers={driverLive && ride?.driverId && typeof driverLive.latitude === 'number' && typeof driverLive.longitude === 'number' ? [{ id: ride.driverId, latitude: driverLive.latitude, longitude: driverLive.longitude }] : []}
           selectedDriverId={ride?.driverId || null}
+          ride={ride}
+          onMessage={async (msg) => {
+            try {
+              if (!msg || !msg.type) return;
+              if (msg.type === 'eta') {
+                setEta(msg.remaining);
+              } else if (msg.type === 'complete') {
+                // simulation completed: mark ride completed locally via server call
+                try {
+                  const { completeRide } = await import('../../firebase/rideService');
+                  if (ride?.id) await completeRide(ride.id);
+                } catch (e) {
+                  console.warn('auto-complete failed', e);
+                }
+              }
+            } catch (e) { console.warn('map onMessage handler error', e); }
+          }}
         />
       </View>
 
-      {/* Ride Info Panel */}
+      {/* Ride Info Panel (dynamic by ride.status) */}
       <View style={styles.infoPanel}>
         <View style={styles.statusContainer}>
           <Text style={styles.statusText}>
-            {ride?.status === 'accepted' ? 'Driver is on the way' :
-             ride?.status === 'arriving' ? 'Driver has arrived' :
-             ride?.status === 'started' ? 'Trip started' :
-             'Searching for driver'}
+            {(() => {
+              const s = String(ride?.status || '').toUpperCase();
+              if (s === 'SEARCHING') return 'Searching for driver...';
+              if (s === 'ACCEPTED') return 'Driver is on the way';
+              if (s === 'ARRIVED') return 'Driver has arrived';
+              if (s === 'OTP_VERIFIED') return 'Trip starting...';
+              if (s === 'ONGOING') return 'Trip in progress';
+              if (s === 'COMPLETED') return 'Trip completed';
+              return 'Searching for driver...';
+            })()}
           </Text>
         </View>
 
-        {eta && ride?.status === 'accepted' && (
-          <View style={styles.etaContainer}>
-            <Text style={styles.etaLabel}>Estimated arrival:</Text>
-            <Text style={styles.etaValue}>{formatETA(eta)}</Text>
+        {/* SEARCHING: show nothing else, disable new bookings (app-level) */}
+        {String(ride?.status || '').toUpperCase() === 'SEARCHING' && (
+          <View style={{ alignItems: 'center', marginTop: 8 }}>
+            <Text style={{ color: '#666' }}>We are finding nearby drivers. This may take a few minutes.</Text>
           </View>
         )}
 
-        {ride?.driverName && (
-          <View style={styles.driverInfo}>
-            <Text style={styles.driverName}>{ride.driverName}</Text>
-            <Text style={styles.driverVehicle}>{ride.driverVehicleModel} • {ride.driverVehicleNumber}</Text>
-            <Text style={styles.driverPhone}>Contact: {ride.driverPhone}</Text>
-          </View>
+        {/* ACCEPTED: show driver info and ETA */}
+        {String(ride?.status || '').toUpperCase() === 'ACCEPTED' && (
+          <>
+            {eta && (
+              <View style={styles.etaContainer}>
+                <Text style={styles.etaLabel}>Estimated arrival:</Text>
+                <Text style={styles.etaValue}>{formatETA(eta)}</Text>
+              </View>
+            )}
+            {/* prefer driverProfile from drivers collection if available */}
+            {(driverProfile || ride?.driverName) && (
+              <View style={styles.driverInfo}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.driverName}>{(driverProfile && driverProfile.name) || ride.driverName || 'Driver'}</Text>
+                  <Text style={styles.driverVehicle}>{(driverProfile && (driverProfile.vehicleModel || driverProfile.vehicle)) || ride.driverVehicleModel || ''} • {(driverProfile && driverProfile.vehicleNumber) || ride.driverVehicleNumber || ''}</Text>
+                  <Text style={styles.driverPhone}>Contact: {(driverProfile && driverProfile.phone) || ride.driverPhone || '--'}</Text>
+                </View>
+              </View>
+            )}
+            {/* show OTP to user so rider can share with driver */}
+            {ride?.pickupOTP && (
+              <View style={{ marginTop: 12, alignItems: 'center' }}>
+                <Text style={{ fontWeight: '700' }}>Pickup OTP</Text>
+                <Text style={{ fontSize: 22, letterSpacing: 4 }}>{String(ride.pickupOTP)}</Text>
+                <Text style={{ color: '#666', marginTop: 4 }}>Share this with the driver.</Text>
+              </View>
+            )}
+          </>
         )}
 
-        {pickupOTP && ride?.status === 'ARRIVED' && (
+        {/* ARRIVED: show OTP box */}
+        {String(ride?.status || '').toUpperCase() === 'ARRIVED' && pickupOTP && (
           <View style={{ marginTop: 12, alignItems: 'center' }}>
             <Text style={{ fontWeight: '700' }}>Pickup OTP</Text>
             <Text style={{ fontSize: 22, letterSpacing: 4 }}>{String(pickupOTP)}</Text>
@@ -178,17 +259,34 @@ export default function RideTrackingScreen({ navigation, route }) {
           </View>
         )}
 
-        {/* Trip completed UI: show when ride status is COMPLETED or completed */}
-        {(ride?.status === 'COMPLETED' || ride?.status === 'completed') && (
+        {/* OTP_VERIFIED: pre-start message */}
+        {String(ride?.status || '').toUpperCase() === 'OTP_VERIFIED' && (
+          <View style={{ alignItems: 'center', marginTop: 12 }}>
+            <Text style={{ fontWeight: '700' }}>Trip starting...</Text>
+            <Text style={{ color: '#666', marginTop: 6 }}>Please remain ready for pickup.</Text>
+          </View>
+        )}
+
+        {/* ONGOING: show live trip UI, ETA/distance/fare */}
+        {String(ride?.status || '').toUpperCase() === 'ONGOING' && (
+          <View style={{ marginTop: 12 }}>
+            <Text style={{ fontWeight: '700', marginBottom: 6 }}>Trip Details</Text>
+            <Text style={{ color: '#333' }}>Drop (exact): {ride?.dropLocation?.name || ride?.dropLocation?.address || ride?.destination?.name || '--'}</Text>
+            <Text style={{ color: '#333', marginTop: 6 }}>Estimated fare: ₹{(ride?.fare?.total ?? ride?.estimatedPrice ?? ride?.fareWithTip ?? '--')}{(ride?.tip ? ` (incl. tip ₹${ride.tip})` : '')}</Text>
+            <Text style={{ color: '#333', marginTop: 6 }}>Estimated time: {eta ? formatETA(eta) : '--'}</Text>
+            <Text style={{ color: '#666', marginTop: 6 }}>Distance remaining: {ride?.driverDistanceKm ? `${ride.driverDistanceKm.toFixed(2)} km` : '--'}</Text>
+          </View>
+        )}
+
+        {/* COMPLETED: final fare and book again */}
+        {String(ride?.status || '').toUpperCase() === 'COMPLETED' && (
           <View style={{ marginTop: 12, alignItems: 'center' }}>
             <Text style={{ fontSize: 20, fontWeight: '700' }}>Trip completed</Text>
-            <Text style={{ color: '#666', marginTop: 6 }}>Thanks for riding with us.</Text>
+            <Text style={{ color: '#666', marginTop: 6 }}>Final fare: ₹{(ride?.fare?.total ?? ride?.estimatedPrice ?? ride?.fareWithTip) ?? '--'}</Text>
             <TouchableOpacity
               style={[styles.button, { marginTop: 12, backgroundColor: '#22A07A' }]}
               onPress={() => {
-                try {
-                  if (navigation && typeof navigation.navigate === 'function') navigation.navigate('UserHome');
-                } catch (e) { /* ignore */ }
+                try { if (navigation && typeof navigation.navigate === 'function') navigation.navigate('UserHome'); } catch (e) {}
               }}
             >
               <Text style={{ color: '#fff', fontWeight: '600' }}>Book again</Text>
@@ -204,13 +302,15 @@ export default function RideTrackingScreen({ navigation, route }) {
           >
             <Text style={styles.emergencyButtonText}>🚨 EMERGENCY SOS</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.button, styles.cancelButton]}
-            onPress={handleCancelRide}
-          >
-            <Text style={styles.cancelButtonText}>Cancel Ride</Text>
-          </TouchableOpacity>
+          {/* Hide cancel option after ride is completed or when status is not cancellable */}
+          {String(ride?.status || '').toUpperCase() !== 'COMPLETED' && String(ride?.status || '').toUpperCase() !== 'ONGOING' && (
+            <TouchableOpacity
+              style={[styles.button, styles.cancelButton]}
+              onPress={handleCancelRide}
+            >
+              <Text style={styles.cancelButtonText}>Cancel Ride</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </SafeAreaView>

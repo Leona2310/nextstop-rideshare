@@ -1,5 +1,6 @@
-import { auth , db } from './firebaseConfig';
-import { doc, getDoc, setDoc, deleteDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { auth, db } from './firebaseConfig';
 
 
 /* ================= CREATE ADMIN ================= */
@@ -58,7 +59,7 @@ export async function getAdminStats() {
     const totalRides = ridesSnap.size;
 
     // Get active rides
-    const activeRidesQuery = query(collection(db, 'rides'), where('status', 'in', ['accepted', 'in_progress']));
+  const activeRidesQuery = query(collection(db, 'rides'), where('status', 'in', ['ACCEPTED', 'ONGOING']));
     const activeRidesSnap = await getDocs(activeRidesQuery);
     const activeRides = activeRidesSnap.size;
 
@@ -82,41 +83,30 @@ export async function getAdminStats() {
  */
 export async function deleteUser(userId) {
   try {
-    // If backend admin endpoint exists, call it to remove Auth user + Firestore docs
+    // Prefer server-side deletion via Callable Function (deletes Auth account + Firestore docs)
     try {
-      // get idToken for authentication to backend admin routes
-      const idToken = await auth.currentUser?.getIdToken();
-      if (idToken) {
-        const backendUrl = (typeof global !== 'undefined' && global.BACKEND_URL) ? global.BACKEND_URL : 'http://localhost:3000';
-        const resp = await fetch(`${backendUrl}/admin/delete-user`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
-          body: JSON.stringify({ uid: userId })
-        });
-        if (resp.ok) {
-          return true;
-        } else {
-          console.warn('Backend delete-user failed, falling back to client-side Firestore cleanup', await resp.text());
+      const functions = getFunctions();
+      const fn = httpsCallable(functions, 'adminDeleteUser');
+      await fn({ uid: userId });
+      return true;
+    } catch (err) {
+      console.warn('adminDeleteUser callable failed, falling back to client-side deletes:', err);
+
+      // Fallback: client-side Firestore cleanup (note: cannot delete Auth account)
+      await deleteDoc(doc(db, 'users', userId));
+      const collections = ['students', 'teachers', 'staff', 'drivers', 'admins'];
+      for (const collectionName of collections) {
+        try {
+          await deleteDoc(doc(db, collectionName, userId));
+        } catch (e) {
+          // Ignore if document doesn't exist
         }
       }
-    } catch (e) {
-      console.warn('Backend delete-user call failed, falling back to client-only cleanup', e);
-    }
+      // Also delete activeDrivers doc if present
+      try { await deleteDoc(doc(db, 'activeDrivers', userId)); } catch (e) {}
 
-    // Fallback: Delete from users collection and role-specific collections only (does not remove Auth account)
-    await deleteDoc(doc(db, 'users', userId));
-    const collections = ['students', 'teachers', 'staff', 'drivers', 'admins'];
-    for (const collectionName of collections) {
-      try {
-        await deleteDoc(doc(db, collectionName, userId));
-      } catch (e) {
-        // Ignore if document doesn't exist
-      }
+      return true;
     }
-    // Also delete activeDrivers doc if present
-    try { await deleteDoc(doc(db, 'activeDrivers', userId)); } catch (e) {}
-
-    return true;
   } catch (error) {
     console.error('Error deleting user:', error);
     throw error;
